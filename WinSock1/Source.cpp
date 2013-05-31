@@ -284,6 +284,15 @@ namespace S2 {
 
 	typedef uint32_t Stamp;
 
+	#define POLL_VAL_DUMMY (-1)
+
+	class PollFdType { public:
+		SOCKET socketfd;
+		static PollFdType Make(SOCKET s) { PollFdType w; w.socketfd = s; return w; }
+		static void ExtractInto(const PollFdType& fd, pollfd *pfd) { pfd->fd = fd.socketfd; }
+		static bool IsDummy(SOCKET s) { return s == POLL_VAL_DUMMY; }
+	};
+
 	class NetExc : ::std::exception {};
 	class NetFailureExc : NetExc {};
 	class NetBlockExc : NetExc {};
@@ -299,6 +308,7 @@ namespace S2 {
 	class PrimitiveBase { public:
 		virtual void WriteU(deque<Fragment>* w) = 0;
 		virtual void ReadU(deque<Fragment>* w) = 0;
+		virtual PollFdType GetPollFd() { return PollFdType::Make(POLL_VAL_DUMMY); };
 	};
 
 	class PrimitiveMemonly : public PrimitiveBase { public:
@@ -323,7 +333,6 @@ namespace S2 {
 	class Managed { public:
 		shared_ptr<PrimitiveBase> prim;
 		deque<Fragment> in, out;
-		Managed() : prim() {};
 		void Transfer() {
 			try { prim->ReadU(&in); } catch (NetBlockExc &e) {}
 			try { prim->WriteU(&out); } catch (NetBlockExc &e) {}
@@ -332,7 +341,82 @@ namespace S2 {
 
 	class ManagedGroup { public:
 		vector<shared_ptr<Managed> > m;
-		void Transfer() { for (auto w : m) w->Transfer(); }
+		void TransferAll() { for (auto w : m) w->Transfer(); }
+		void Transfer() {
+			unique_ptr<pollfd[]> pfd(new pollfd[m.size()]);
+
+			for (size_t i = 0; i < m.size(); i++) {
+				PollFdType::ExtractInto(m[i]->prim->GetPollFd(), &pfd[i]);
+				pfd[i].events = POLLIN | POLLOUT;
+				pfd[i].revents = 0;
+			}
+
+			bool allDummy = true;
+			for (size_t i = 0; i < m.size(); i++) if (!PollFdType::IsDummy(pfd[i].fd)) allDummy = false;
+
+			int r;
+			if (allDummy) r = 1; else r = WSAPoll(&pfd[0], m.size(), 0);
+			if (r == SOCKET_ERROR) throw NetFailureExc();
+			if (r > 0) {
+				for (size_t i = 0; i < m.size(); i++) {
+					if (PollFdType::IsDummy(pfd[i].fd) || (pfd[i].revents & (POLLIN | POLLOUT)))
+						try { m[i]->Transfer(); } catch (NetBlockExc &e) {};
+				}
+			}
+		}
+	};
+
+};
+
+namespace S3 {
+
+	using namespace S2;
+
+	enum class PipeType {
+		Packet
+	};
+
+	class Pipe { public:
+		PipeType pt;
+
+		static Pipe * Make(PipeType pt) {
+			switch (pt) {
+			case PipeType::Packet:
+			default: assert(0);
+			};
+		}
+	};
+
+	class PipePacket : public Pipe {
+	};
+
+	class PipeEltPrim { friend class PipeMaker;
+	public:
+	private:
+		shared_ptr<PrimitiveBase> prim;
+	};
+
+	class PipeEltMgd { friend class PipeMaker;
+	public:
+		shared_ptr<PipeEltPrim> eprim;
+	private:
+		shared_ptr<Managed> mgd;
+	};
+
+	class PipeEltPkt { friend class PipeMaker;
+	public:
+		shared_ptr<PipeEltMgd> emgd;
+	};
+
+	class PipeMaker { public:
+	static shared_ptr<PipePacket> MakePacket(shared_ptr<PrimitiveBase> pb, shared_ptr<Managed> mgd) {
+		shared_ptr<PipePacket> pl = make_shared<PipePacket>();
+		pl->pt = PipeType::Packet;
+
+		shared_ptr<PipeEltPrim> e0 = make_shared<PipeEltPrim>(); e0->prim = pb;
+		shared_ptr<PipeEltMgd> e1 = make_shared<PipeEltMgd>(); e1->mgd = mgd;
+		return pl;
+	}
 	};
 
 };
