@@ -305,10 +305,15 @@ namespace S2 {
 		string data;
 	};
 
+	class FragmentTransfer { public:
+		deque<Fragment> write;
+		deque<Fragment> read;
+	};
+
 	class PrimitiveBase { public:
 		virtual void WriteU(deque<Fragment>* w) = 0;
 		virtual void ReadU(deque<Fragment>* w) = 0;
-		virtual PollFdType GetPollFd() { return PollFdType::Make(POLL_VAL_DUMMY); };
+		virtual PollFdType GetPollFd() { return PollFdType::Make(POLL_VAL_DUMMY); }
 	};
 
 	class PrimitiveMemonly : public PrimitiveBase { public:
@@ -325,9 +330,17 @@ namespace S2 {
 		}
 	};
 
+	class PrimitiveSock : public PrimitiveBase { public:
+		virtual PollFdType GetPollFd() { return PollFdType::Make(POLL_VAL_DUMMY); }	
+	};
+
 	class PrimitiveZombie : public PrimitiveBase { public:
 		void WriteU(deque<Fragment>* w) { throw NetBlockExc(); }
 		void ReadU(deque<Fragment>* w) { throw NetBlockExc(); }
+	};
+
+	class ManagedBase { public:
+		deque<Fragment> in, out;
 	};
 
 	class Managed { public:
@@ -339,9 +352,96 @@ namespace S2 {
 		}
 	};
 
+	class ManagedSock : public ManagedBase { public:
+	};
+
+	class Poller { public:
+		vector<pollfd> pfd;
+
+		size_t Size() {
+			return pfd.size();
+		}
+
+		void PushBack(shared_ptr<PrimitiveSock> ps) {
+			assert(!PollFdType::IsDummy(ps->GetPollFd().socketfd));
+			AssureSpaceLeft();
+
+			pfd.push_back(pollfd());
+			PollFdType::ExtractInto(ps->GetPollFd(), &pfd.data()[pfd.size()]);
+		};
+
+		void ReadyForPoll() {
+			for (size_t i = 0; i < pfd.size(); i++) {
+				pfd[i].events = POLLIN | POLLOUT;
+				pfd[i].revents = 0;
+			}
+		};
+
+		void AssureSpaceLeft() {
+			if (pfd.capacity() < pfd.size() + 1) pfd.reserve(pfd.size() + 1);
+		}
+	};
+
+	typedef vector<pair<weak_ptr<ManagedSock>, deque<Fragment>> > ManagedGroupStagedRead_t;
+
+	void StagedReadApply(const ManagedGroupStagedRead_t& srt) {
+		for (size_t i = 0; i < srt.size(); i++) {
+			shared_ptr<ManagedSock> w = srt[i].first.lock(); assert(w);
+			w->in.insert(w->in.end(), srt[i].second.begin(), srt[i].second.end());
+		}
+	};
+
 	class ManagedGroup { public:
+		vector<weak_ptr<PrimitiveSock> > m_sockp;
+		vector<weak_ptr<ManagedSock> > m_sockm;
+		Poller m_poller;
+		
+		vector<shared_ptr<Managed> > m_rest;
+
+		shared_ptr<ManagedSock> RegSock(shared_ptr<PrimitiveSock> ps) {
+			shared_ptr<ManagedSock> w = make_shared<ManagedSock>();
+			m_sockp.push_back(ps);
+			m_sockm.push_back(w);
+			m_poller.PushBack(ps);
+			return w;
+		}
+
+		void AssurePfd() {
+			assert(m_sockp.size() == m_sockm.size() == m_poller.Size());
+			// Sticking inactive Pfds into the Poller function is legitimate, not needed
+			// FIXME: Should probably be pruning expired-weakptr entries though
+			for (size_t i = 0; i < m_sockp.size(); i++) {
+			}
+		};
+
+		shared_ptr<ManagedGroupStagedRead_t> StagedRead() {
+			AssurePfd();
+
+			shared_ptr<ManagedGroupStagedRead_t> ret = make_shared<ManagedGroupStagedRead_t>();
+
+			int r = WSAPoll(m_poller.pfd.data(), m_poller.pfd.size(), 0);
+			if (r == SOCKET_ERROR) throw NetFailureExc();
+			if (r > 0) {
+				for (size_t i = 0; i < m.size(); i++) {
+					if (m_poller.pfd[i].revents & (POLLIN | POLLOUT)) {
+						shared_ptr<PrimitiveSock> t = m_sockp[i].lock(); assert(t);
+						deque<Fragment> w;
+						try { t->ReadU(&w); } catch (NetBlockExc &e) {};
+
+						/* Push a dummy deque first, then swap ReadU's data in */
+						ret->push_back(make_pair(m_sockm[i], deque<Fragment>()));
+						ret->at(ret->size() - 1).second.swap(w);
+					}
+				}
+			}
+
+			return ret;
+		}
+
 		vector<shared_ptr<Managed> > m;
+
 		void TransferAll() { for (auto w : m) w->Transfer(); }
+
 		void Transfer() {
 			unique_ptr<pollfd[]> pfd(new pollfd[m.size()]);
 
@@ -366,6 +466,10 @@ namespace S2 {
 		}
 	};
 
+	shared_ptr<ManagedSock> MakeMgdSkt(shared_ptr<ManagedGroup> mg, shared_ptr<PrimitiveSock> ps) {
+		return mg->RegSock(ps);
+	}
+
 };
 
 namespace S3 {
@@ -378,43 +482,28 @@ namespace S3 {
 
 	class Pipe { public:
 		PipeType pt;
-
-		static Pipe * Make(PipeType pt) {
-			switch (pt) {
-			case PipeType::Packet:
-			default: assert(0);
-			};
-		}
 	};
 
 	class PipePacket : public Pipe {
+	public:
+		shared_ptr<PrimitiveBase> pb;
+		shared_ptr<ManagedBase> mgd;
 	};
 
-	class PipeEltPrim { friend class PipeMaker;
-	public:
-	private:
-		shared_ptr<PrimitiveBase> prim;
-	};
-
-	class PipeEltMgd { friend class PipeMaker;
-	public:
-		shared_ptr<PipeEltPrim> eprim;
-	private:
-		shared_ptr<Managed> mgd;
-	};
-
-	class PipeEltPkt { friend class PipeMaker;
-	public:
-		shared_ptr<PipeEltMgd> emgd;
-	};
+	//Only worthwile member of Prim is GetPollFD?
+	//MakeMgdSkt(MgdGroup, Prim) -> MgdGroup.Reg(Prim)
+	//MakeMgdMemonly() -> Nothing
+	//If going for a cursor design, mgd is probably it
+	//Maybe: No call downs into Prim, MgdGroup injects into Mgd queue OR stages, to be applied
+	//  Stages, bond by WeakPtr
+	//Mgd multiple groups: SockBased, EveryFrameCallbackBased
 
 	class PipeMaker { public:
-	static shared_ptr<PipePacket> MakePacket(shared_ptr<PrimitiveBase> pb, shared_ptr<Managed> mgd) {
+	static shared_ptr<PipePacket> MakePacket(shared_ptr<PrimitiveBase> pb, shared_ptr<ManagedBase> mgd) {
 		shared_ptr<PipePacket> pl = make_shared<PipePacket>();
 		pl->pt = PipeType::Packet;
-
-		shared_ptr<PipeEltPrim> e0 = make_shared<PipeEltPrim>(); e0->prim = pb;
-		shared_ptr<PipeEltMgd> e1 = make_shared<PipeEltMgd>(); e1->mgd = mgd;
+		pl->pb = pb;
+		pl->mgd = mgd;
 		return pl;
 	}
 	};
