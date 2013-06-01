@@ -20,7 +20,7 @@
 
 using namespace std;
 
-///////////////////////////////////////////
+/////////////////////////////////////////////
 #if 0
 
 namespace Socket
@@ -256,7 +256,7 @@ private:
 };
 
 #endif
-///////////////////////////////////////////
+/////////////////////////////////////////////
 
 class WinsockWrap
 {
@@ -297,8 +297,10 @@ namespace S2 {
 	class NetFailureExc : NetExc {};
 	class NetBlockExc : NetExc {};
 
-	namespace Ll {
-	};
+	bool ErrorWouldBlock() {
+		int e = WSAGetLastError();
+		return e == WSAEWOULDBLOCK || e == WSAEINTR || e == WSAEINPROGRESS;
+	}
 
 	class Fragment { public:
 		Stamp stamp;
@@ -331,7 +333,12 @@ namespace S2 {
 	};
 
 	class PrimitiveSock : public PrimitiveBase { public:
-		virtual PollFdType GetPollFd() { return PollFdType::Make(POLL_VAL_DUMMY); }	
+		PollFdType s;
+		PrimitiveSock(PollFdType s) : s(s) {}
+
+		virtual void WriteU(deque<Fragment>* w) { assert(0); }
+		virtual void ReadU(deque<Fragment>* w) { assert(0); }
+		virtual PollFdType GetPollFd() { return s; }	
 	};
 
 	class PrimitiveZombie : public PrimitiveBase { public:
@@ -364,10 +371,8 @@ namespace S2 {
 
 		void PushBack(shared_ptr<PrimitiveSock> ps) {
 			assert(!PollFdType::IsDummy(ps->GetPollFd().socketfd));
-			AssureSpaceLeft();
-
 			pfd.push_back(pollfd());
-			PollFdType::ExtractInto(ps->GetPollFd(), &pfd.data()[pfd.size()]);
+			PollFdType::ExtractInto(ps->GetPollFd(), &pfd.data()[pfd.size() - 1]);
 		};
 
 		void ReadyForPoll() {
@@ -377,9 +382,6 @@ namespace S2 {
 			}
 		};
 
-		void AssureSpaceLeft() {
-			if (pfd.capacity() < pfd.size() + 1) pfd.reserve(pfd.size() + 1);
-		}
 	};
 
 	typedef vector<pair<weak_ptr<ManagedSock>, deque<Fragment>> > ManagedGroupStagedRead_t;
@@ -470,6 +472,80 @@ namespace S2 {
 		return mg->RegSock(ps);
 	}
 
+	class PrimitiveListening { public:
+		SOCKET sock;
+
+		PrimitiveListening() {
+			struct addrinfo *res = nullptr;
+			struct addrinfo hints = {0};
+			hints.ai_family = AF_INET;
+			hints.ai_socktype = SOCK_STREAM;
+			hints.ai_protocol = 0;
+			hints.ai_flags = AI_PASSIVE;
+
+			SOCKET listen_sock = INVALID_SOCKET;
+
+			try {
+
+				if (getaddrinfo(nullptr, "27010", &hints, &res))
+					throw exception("Getaddrinfo");
+
+				if ((listen_sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol)) == INVALID_SOCKET)
+					throw exception("Socket creation");
+
+				if (bind(listen_sock, res->ai_addr, res->ai_addrlen) == SOCKET_ERROR)
+					throw exception("Socket bind");
+
+				if (listen(listen_sock, SOMAXCONN) == SOCKET_ERROR)
+					throw exception("Socket listen");
+
+				u_long blockmode = 1;
+				if (ioctlsocket(listen_sock, FIONBIO, &blockmode) != NO_ERROR)
+					throw exception("Socket nonblocking mode");
+
+				freeaddrinfo(res);
+
+				sock = listen_sock;
+
+			} catch (exception &) {
+				if (res) freeaddrinfo(res);
+				if (listen_sock != INVALID_SOCKET) closesocket(listen_sock);
+				throw;
+			}
+		}
+
+		~PrimitiveListening()
+		{
+			closesocket(sock);
+		}
+
+		vector<shared_ptr<PrimitiveSock>> Accept()
+		{
+			vector<SOCKET> w;
+
+			bool blocked = false;
+
+			while (!blocked) {
+				SOCKET s = accept(sock, nullptr, nullptr);
+
+				if (s != INVALID_SOCKET)
+					w.push_back(SOCKET(s));
+				else if (ErrorWouldBlock())
+					blocked = true;
+				else
+					throw exception("Accept");
+			}
+
+			vector<shared_ptr<PrimitiveSock>> r;
+
+			transform(w.begin(), w.end(), back_inserter(r), [](SOCKET &p) {
+				return make_shared<PrimitiveSock>(PollFdType::Make(p));
+			});
+
+			return r;
+		}
+	};
+
 };
 
 namespace S3 {
@@ -525,6 +601,16 @@ int main()
 	S::ManagedGroup g; g.m.push_back(mm); g.m.push_back(mz);
 
 	for (int i = 0; i < 5; i++) g.Transfer();
+
+	{
+		auto pl = make_shared<S::PrimitiveListening>();
+		auto mg = make_shared<S::ManagedGroup>();
+
+		vector<shared_ptr<S::PrimitiveSock> > svec;
+		while(!(svec = pl->Accept()).size()) {}
+
+		auto ms = S::MakeMgdSkt(mg, svec.at(0));
+	}
 
 	return EXIT_SUCCESS;
 }
