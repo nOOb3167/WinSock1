@@ -417,14 +417,15 @@ namespace S2 {
 		};
 
 		shared_ptr<ManagedGroupStagedRead_t> StagedRead() {
-			AssurePfd();
-
 			shared_ptr<ManagedGroupStagedRead_t> ret = make_shared<ManagedGroupStagedRead_t>();
 
-			int r = WSAPoll(m_poller.pfd.data(), m_poller.pfd.size(), 0);
+			AssurePfd();
+			m_poller.ReadyForPoll();
+
+			int r = WSAPoll(m_poller.pfd.data(), m_poller.Size(), 0);
 			if (r == SOCKET_ERROR) throw NetFailureExc();
 			if (r > 0) {
-				for (size_t i = 0; i < m.size(); i++) {
+				for (size_t i = 0; i < m_poller.Size(); i++) {
 					if (m_poller.pfd[i].revents & (POLLIN | POLLOUT)) {
 						shared_ptr<PrimitiveSock> t = m_sockp[i].lock(); assert(t);
 						deque<Fragment> w;
@@ -609,7 +610,9 @@ int main()
 		vector<shared_ptr<S::PrimitiveSock> > svec;
 		while(!(svec = pl->Accept()).size()) {}
 
-		auto ms = S::MakeMgdSkt(mg, svec.at(0));
+		auto ms = S::MakeMgdSkt(mg, svec.at(0)); 
+
+		while(1) mg->StagedRead();
 	}
 
 	return EXIT_SUCCESS;
