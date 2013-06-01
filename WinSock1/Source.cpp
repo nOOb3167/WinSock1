@@ -302,6 +302,10 @@ namespace S2 {
 		return e == WSAEWOULDBLOCK || e == WSAEINTR || e == WSAEINPROGRESS;
 	}
 
+	Stamp  EmptyStamp() {
+		return 0xBBAACCFF;
+	}
+
 	class Fragment { public:
 		Stamp stamp;
 		string data;
@@ -337,7 +341,28 @@ namespace S2 {
 		PrimitiveSock(PollFdType s) : s(s) {}
 
 		virtual void WriteU(deque<Fragment>* w) { assert(0); }
-		virtual void ReadU(deque<Fragment>* w) { assert(0); }
+		virtual void ReadU(deque<Fragment>* w) {
+			const uint32_t magicReadSize = MAGIC_READ_SIZE;
+			char buf[magicReadSize];
+
+			bool blocked = false;
+
+			while (!blocked) {
+				int r = recv(s.socketfd, buf, magicReadSize, 0);
+				if (r == 0) assert(0); /* Gracefully closed */
+				if (r == SOCKET_ERROR)
+					if (ErrorWouldBlock()) throw NetBlockExc();
+					else                   throw NetFailureExc();
+
+				Fragment frag;
+				frag.stamp = EmptyStamp();
+				frag.data = string(buf, r);
+
+				w->push_back(frag);
+
+				printf("Read: %s\n", frag.data.c_str());
+			}
+		}
 		virtual PollFdType GetPollFd() { return s; }	
 	};
 
