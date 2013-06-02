@@ -8,6 +8,7 @@
 #include <deque>
 #include <algorithm>
 #include <iterator>
+#include <numeric> /* accumulate */
 
 #include <loginc.h>
 
@@ -242,7 +243,7 @@ public:
 		merged.insert(merged.end(), prim.begin(), prim.end());
 		merged.insert(merged.end(), w.begin(), w.end());
 
-		for (auto i : merged) {
+		for (auto &i : merged) {
 
 		}
 	}
@@ -389,6 +390,11 @@ namespace S2 {
 	};
 
 	class ManagedSock : public ManagedBase { public:
+		bool knownClosed;
+
+		ManagedSock() : knownClosed(false) {}
+
+		void KnownClosed() { knownClosed = true; }
 	};
 
 	class Poller { public:
@@ -413,35 +419,79 @@ namespace S2 {
 
 	};
 
-	typedef vector<pair<weak_ptr<ManagedSock>, deque<Fragment>> > ManagedGroupStagedRead_t;
-	typedef vector<pair<weak_ptr<ManagedSock>, bool> > ManagedGroupStagedDisconnect_t; /* pair<sock, gracefulp> */
-	typedef struct { shared_ptr<ManagedGroupStagedRead_t> r; shared_ptr<ManagedGroupStagedDisconnect_t> d; } ManagedGroupStaged_t;
+	class ManagedGroup {
 
-	void StagedReadApply(const ManagedGroupStagedRead_t& srt) {
-		for (size_t i = 0; i < srt.size(); i++) {
-			shared_ptr<ManagedSock> w = srt[i].first.lock(); assert(w);
-			w->in.insert(w->in.end(), srt[i].second.begin(), srt[i].second.end());
-		}
-	};
-
-	void StagedDisconnectApply(const ManagedGroupStagedDisconnect_t& sdt) {
-		for (auto i : sdt) {
-			LOG(INFO) << "Processing Staged Disconnect. Graceful: " << bool(i.second);
-		}
-	};
-
-	class ManagedGroup { public:
+		struct StagedReadEntry { size_t idx; weak_ptr<ManagedSock> ms; deque<Fragment> rd; };
+		struct StagedDisconnectEntry { size_t idx; weak_ptr<ManagedSock> ms; bool gracefulp; };
+		typedef vector<StagedReadEntry> StagedRead_t;
+		typedef vector<StagedDisconnectEntry> StagedDisconnect_t;
+		typedef struct { shared_ptr<StagedRead_t> r; shared_ptr<StagedDisconnect_t> d; } Staged_t;
+	
+	private:
 		vector<weak_ptr<PrimitiveSock> > m_sockp;
 		vector<weak_ptr<ManagedSock> > m_sockm;
 		Poller m_poller;
+
+		size_t mSockCnt;
 		
 		vector<shared_ptr<Managed> > m_rest;
 
+		void AddItem(shared_ptr<PrimitiveSock> ps, shared_ptr<ManagedSock> w) {
+			int stage;
+			try {
+				stage = 0; m_sockp.push_back(ps);
+				stage = 1; m_sockm.push_back(w);
+				stage = 2; m_poller.PushBack(ps);
+			} catch (exception &e) {
+				try { switch (stage) { case 1: m_sockp.pop_back(); case 2: m_sockm.pop_back(); } } catch (exception &e2) { LOG(FATAL) << "Recovery Failure"; };
+				throw;
+			}
+			mSockCnt++;
+		}
+
+		void RemoveItemMulti(StagedRead_t &sre) {
+			if (! sre.size()) return;
+			if (! sre.back().idx < mSockCnt) throw exception("Attempt to remove nonexistent"); /* FIXME: */
+
+			assert(mSockCnt == m_sockp.size() == m_sockm.size() == m_poller.Size());
+
+			/**
+			* Algorithm:
+			* With the array remidx filled as remidx0(=sre[0].idx)..remidx1(=sre[n].idx)..remidxEND(=mSockCnt)
+			* [0, remidx0) ; [(remidxn)+1 remidnext) ; Are the half-open ranges that need to be copied
+			* The total number of copied elements is (mSockCnt - remidxs.size()) (All elements except the +1 lumpouts)
+			*/
+			vector<size_t> remidxs;
+
+			for_each(sre.begin(), sre.end(), [&remidxs](StagedReadEntry &x) { remidxs.push_back(x.idx); });
+			sort(remidxs.begin(), remidxs.end(), less<size_t>());
+			remidxs.push_back(mSockCnt); /* The extra remidx coming from mSockCnt instead of a sre.idx */
+
+			vector<weak_ptr<PrimitiveSock> > newp(mSockCnt - remidxs.size());
+			vector<weak_ptr<ManagedSock> > newm(mSockCnt - remidxs.size());
+			vector<pollfd> newl(mSockCnt - remidxs.size());
+
+			auto itp = m_sockp.begin(), ttp = newp.begin();
+			auto itm = m_sockm.begin(), ttm = newm.begin();
+			auto itl = m_poller.pfd.begin(), ttl = newl.begin();
+
+			size_t ncopy;
+			/* One range per iteration */
+			for (size_t curidx = 0, tgtidx = 0; tgtidx < remidxs.size(); tgtidx++) {
+				/* 'ncopy' and 'itp/m/l' iterators are at 'curidx' */
+				/* As 'ncopy' is 'remidxs[tgtidx]-curidx', advancing 'curidx' and the iterators by 'ncopy+1' gets to '(remidxn)+1' */
+				ncopy  = remidxs[tgtidx] - curidx;
+				ttp = copy_n(itp, ncopy, ttp);
+				ttm = copy_n(itm, ncopy, ttm);
+				ttl = copy_n(itl, ncopy, ttl);
+				itp+=ncopy+1; itm+=ncopy+1; itl+=ncopy+1;
+				curidx+=ncopy+1;
+			}
+		}
+
 		shared_ptr<ManagedSock> RegSock(shared_ptr<PrimitiveSock> ps) {
 			shared_ptr<ManagedSock> w = make_shared<ManagedSock>();
-			m_sockp.push_back(ps);
-			m_sockm.push_back(w);
-			m_poller.PushBack(ps);
+			AddItem(ps, w);
 			return w;
 		}
 
@@ -449,13 +499,15 @@ namespace S2 {
 			assert(m_sockp.size() == m_sockm.size() == m_poller.Size());
 			// Sticking inactive Pfds into the Poller function is legitimate, not needed
 			// FIXME: Should probably be pruning expired-weakptr entries though
-			for (size_t i = 0; i < m_sockp.size(); i++) {}
 		};
 
-		ManagedGroupStaged_t StagedRead() {
-			shared_ptr<ManagedGroupStagedRead_t>       retr = make_shared<ManagedGroupStagedRead_t>();
-			shared_ptr<ManagedGroupStagedDisconnect_t> retd = make_shared<ManagedGroupStagedDisconnect_t>();
-			ManagedGroupStaged_t ret = { retr, retd };
+	public:
+		ManagedGroup() : mSockCnt(0) {}
+
+		Staged_t StagedRead() {
+			shared_ptr<StagedRead_t>       retr = make_shared<StagedRead_t>();
+			shared_ptr<StagedDisconnect_t> retd = make_shared<StagedDisconnect_t>();
+			Staged_t ret = { retr, retd };
 
 			AssurePfd();
 			m_poller.ReadyForPoll();
@@ -472,14 +524,17 @@ namespace S2 {
 						try { t->ReadU(&w); } catch (NetBlockExc &e) {}
 
 						if (!w.empty()) {
+							StagedReadEntry mgre = {i, m_sockm[i], deque<Fragment>()};
 							/* Push a dummy deque first, then swap ReadU's data in */
-							retr->push_back(make_pair(m_sockm[i], deque<Fragment>()));
-							retr->at(retr->size() - 1).second.swap(w);
+							retr->push_back(mgre);
+							retr->at(retr->size() - 1).rd.swap(w);
 						}
 					} catch (NetDisconnectExc &e) {
-						retd->push_back(make_pair(m_sockm[i], true));
+						StagedDisconnectEntry mgde = {i, m_sockm[i], true};
+						retd->push_back(mgde);
 					} catch (NetFailureExc &e) {
-						retd->push_back(make_pair(m_sockm[i], false));
+						StagedDisconnectEntry mgde = {i, m_sockm[i], false};
+						retd->push_back(mgde);
 					}
 				}
 			}
@@ -487,37 +542,26 @@ namespace S2 {
 			return ret;
 		}
 
-		vector<shared_ptr<Managed> > m;
-
-		void TransferAll() { for (auto w : m) w->Transfer(); }
-
-		void Transfer() {
-			unique_ptr<pollfd[]> pfd(new pollfd[m.size()]);
-
-			for (size_t i = 0; i < m.size(); i++) {
-				PollFdType::ExtractInto(m[i]->prim->GetPollFd(), &pfd[i]);
-				pfd[i].events = POLLIN | POLLOUT;
-				pfd[i].revents = 0;
-			}
-
-			bool allDummy = true;
-			for (size_t i = 0; i < m.size(); i++) if (!PollFdType::IsDummy(pfd[i].fd)) allDummy = false;
-
-			int r;
-			if (allDummy) r = 1; else r = WSAPoll(&pfd[0], m.size(), 0);
-			if (r == SOCKET_ERROR) throw NetFailureExc();
-			if (r > 0) {
-				for (size_t i = 0; i < m.size(); i++) {
-					if (PollFdType::IsDummy(pfd[i].fd) || (pfd[i].revents & (POLLIN | POLLOUT)))
-						try { m[i]->Transfer(); } catch (NetBlockExc &e) {};
-				}
+		static void StagedReadApply(const StagedRead_t& srt) {
+			for (size_t i = 0; i < srt.size(); i++) {
+				LOG(INFO) << "Processing Staged Read: " << accumulate(srt[i].rd.begin(), srt[i].rd.end(), string(), [](string &x, const Fragment &y){return x+=y.data;});
+				shared_ptr<ManagedSock> w = srt[i].ms.lock(); assert(w);
+				w->in.insert(w->in.end(), srt[i].rd.begin(), srt[i].rd.end());
 			}
 		}
-	};
 
-	shared_ptr<ManagedSock> MakeMgdSkt(shared_ptr<ManagedGroup> mg, shared_ptr<PrimitiveSock> ps) {
-		return mg->RegSock(ps);
-	}
+		static void StagedDisconnectApply(const StagedDisconnect_t& sdt) {
+			for (auto &i : sdt) {
+				LOG(INFO) << "Processing Staged Disconnect. Graceful: " << bool(i.gracefulp);
+				shared_ptr<ManagedSock> w = i.ms.lock(); assert(w); /* FIXME: Handle ghost */
+				w->KnownClosed();
+			}
+		}
+
+		static shared_ptr<ManagedSock> MakeMgdSkt(shared_ptr<ManagedGroup> mg, shared_ptr<PrimitiveSock> ps) {
+			return mg->RegSock(ps);
+		}
+	};
 
 	class PrimitiveListening { public:
 		SOCKET sock;
@@ -620,6 +664,8 @@ namespace S3 {
 	//Maybe: No call downs into Prim, MgdGroup injects into Mgd queue OR stages, to be applied
 	//  Stages, bond by WeakPtr
 	//Mgd multiple groups: SockBased, EveryFrameCallbackBased
+	//
+	// class Abc { Base x; }; vs class Abc { Base getX(); };
 
 	class PipeMaker { public:
 	static shared_ptr<PipePacket> MakePacket(shared_ptr<PrimitiveBase> pb, shared_ptr<ManagedBase> mgd) {
@@ -635,24 +681,14 @@ namespace S3 {
 
 int main()
 {
+	namespace S = S2;
+
 	FLAGS_logtostderr = 1;
 	google::InitGoogleLogging("WinSock1");
 
 	LOG(INFO) << "Hello";
 
 	WinsockWrap ww;
-
-	namespace S = S2;
-
-	shared_ptr<S::Managed> mm(new S::Managed);
-	auto w1 = make_shared<S::PrimitiveMemonly>();
-	for (int i = 0; i < 5; i++) w1->read.push_back(S::Fragment());
-	mm->prim = w1; 
-	shared_ptr<S::Managed> mz(new S::Managed); mz->prim = make_shared<S::PrimitiveZombie>();
-
-	S::ManagedGroup g; g.m.push_back(mm); g.m.push_back(mz);
-
-	for (int i = 0; i < 5; i++) g.Transfer();
 
 	{
 		auto pl = make_shared<S::PrimitiveListening>();
@@ -661,9 +697,13 @@ int main()
 		vector<shared_ptr<S::PrimitiveSock> > svec;
 		while(!(svec = pl->Accept()).size()) {}
 
-		auto ms = S::MakeMgdSkt(mg, svec.at(0)); 
+		auto ms = S::ManagedGroup::MakeMgdSkt(mg, svec.at(0)); 
 
-		while(1) mg->StagedRead();
+		while(1) {
+			auto w = mg->StagedRead();
+			S::ManagedGroup::StagedReadApply(*w.r);
+			S::ManagedGroup::StagedDisconnectApply(*w.d);
+		}
 	}
 
 	return EXIT_SUCCESS;
