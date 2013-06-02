@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <iterator>
 
+#include <loginc.h>
+
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
@@ -295,6 +297,7 @@ namespace S2 {
 
 	class NetExc : ::std::exception {};
 	class NetFailureExc : NetExc {};
+	class NetDisconnectExc : NetFailureExc {};
 	class NetBlockExc : NetExc {};
 
 	bool ErrorWouldBlock() {
@@ -338,6 +341,7 @@ namespace S2 {
 
 	class PrimitiveSock : public PrimitiveBase { public:
 		PollFdType s;
+
 		PrimitiveSock(PollFdType s) : s(s) {}
 
 		virtual void WriteU(deque<Fragment>* w) { assert(0); }
@@ -349,7 +353,7 @@ namespace S2 {
 
 			while (!blocked) {
 				int r = recv(s.socketfd, buf, magicReadSize, 0);
-				if (r == 0) assert(0); /* Gracefully closed */
+				if (r == 0)                throw NetDisconnectExc();
 				if (r == SOCKET_ERROR)
 					if (ErrorWouldBlock()) throw NetBlockExc();
 					else                   throw NetFailureExc();
@@ -360,7 +364,7 @@ namespace S2 {
 
 				w->push_back(frag);
 
-				printf("Read: %s\n", frag.data.c_str());
+				LOG(INFO) << "Read " << frag.data.c_str();
 			}
 		}
 		virtual PollFdType GetPollFd() { return s; }	
@@ -410,11 +414,19 @@ namespace S2 {
 	};
 
 	typedef vector<pair<weak_ptr<ManagedSock>, deque<Fragment>> > ManagedGroupStagedRead_t;
+	typedef vector<pair<weak_ptr<ManagedSock>, bool> > ManagedGroupStagedDisconnect_t; /* pair<sock, gracefulp> */
+	typedef struct { shared_ptr<ManagedGroupStagedRead_t> r; shared_ptr<ManagedGroupStagedDisconnect_t> d; } ManagedGroupStaged_t;
 
 	void StagedReadApply(const ManagedGroupStagedRead_t& srt) {
 		for (size_t i = 0; i < srt.size(); i++) {
 			shared_ptr<ManagedSock> w = srt[i].first.lock(); assert(w);
 			w->in.insert(w->in.end(), srt[i].second.begin(), srt[i].second.end());
+		}
+	};
+
+	void StagedDisconnectApply(const ManagedGroupStagedDisconnect_t& sdt) {
+		for (auto i : sdt) {
+			LOG(INFO) << "Processing Staged Disconnect. Graceful: " << bool(i.second);
 		}
 	};
 
@@ -437,28 +449,37 @@ namespace S2 {
 			assert(m_sockp.size() == m_sockm.size() == m_poller.Size());
 			// Sticking inactive Pfds into the Poller function is legitimate, not needed
 			// FIXME: Should probably be pruning expired-weakptr entries though
-			for (size_t i = 0; i < m_sockp.size(); i++) {
-			}
+			for (size_t i = 0; i < m_sockp.size(); i++) {}
 		};
 
-		shared_ptr<ManagedGroupStagedRead_t> StagedRead() {
-			shared_ptr<ManagedGroupStagedRead_t> ret = make_shared<ManagedGroupStagedRead_t>();
+		ManagedGroupStaged_t StagedRead() {
+			shared_ptr<ManagedGroupStagedRead_t>       retr = make_shared<ManagedGroupStagedRead_t>();
+			shared_ptr<ManagedGroupStagedDisconnect_t> retd = make_shared<ManagedGroupStagedDisconnect_t>();
+			ManagedGroupStaged_t ret = { retr, retd };
 
 			AssurePfd();
 			m_poller.ReadyForPoll();
 
 			int r = WSAPoll(m_poller.pfd.data(), m_poller.Size(), 0);
 			if (r == SOCKET_ERROR) throw NetFailureExc();
+			
 			if (r > 0) {
-				for (size_t i = 0; i < m_poller.Size(); i++) {
-					if (m_poller.pfd[i].revents & (POLLIN | POLLOUT)) {
+				for (size_t i = 0; i < m_poller.Size() && m_poller.pfd[i].revents & (POLLIN | POLLOUT); i++) {
+					try {
 						shared_ptr<PrimitiveSock> t = m_sockp[i].lock(); assert(t);
 						deque<Fragment> w;
-						try { t->ReadU(&w); } catch (NetBlockExc &e) {};
 
-						/* Push a dummy deque first, then swap ReadU's data in */
-						ret->push_back(make_pair(m_sockm[i], deque<Fragment>()));
-						ret->at(ret->size() - 1).second.swap(w);
+						try { t->ReadU(&w); } catch (NetBlockExc &e) {}
+
+						if (!w.empty()) {
+							/* Push a dummy deque first, then swap ReadU's data in */
+							retr->push_back(make_pair(m_sockm[i], deque<Fragment>()));
+							retr->at(retr->size() - 1).second.swap(w);
+						}
+					} catch (NetDisconnectExc &e) {
+						retd->push_back(make_pair(m_sockm[i], true));
+					} catch (NetFailureExc &e) {
+						retd->push_back(make_pair(m_sockm[i], false));
 					}
 				}
 			}
@@ -614,6 +635,11 @@ namespace S3 {
 
 int main()
 {
+	FLAGS_logtostderr = 1;
+	google::InitGoogleLogging("WinSock1");
+
+	LOG(INFO) << "Hello";
+
 	WinsockWrap ww;
 
 	namespace S = S2;
