@@ -465,7 +465,7 @@ namespace S2 {
 
 			for_each(sre.begin(), sre.end(), [&remidxs](StagedReadEntry &x) { remidxs.push_back(x.idx); });
 			sort(remidxs.begin(), remidxs.end(), less<size_t>());
-			remidxs.push_back(mSockCnt); /* The extra remidx coming from mSockCnt instead of a sre.idx */
+			remidxs.push_back(mSockCnt - 1); /* The extra remidx coming from mSockCnt instead of a sre.idx */
 
 			vector<weak_ptr<PrimitiveSock> > newp(mSockCnt - remidxs.size());
 			vector<weak_ptr<ManagedSock> > newm(mSockCnt - remidxs.size());
