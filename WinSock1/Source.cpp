@@ -394,7 +394,8 @@ namespace S2 {
 
 		ManagedSock() : knownClosed(false) {}
 
-		void KnownClosed() { knownClosed = true; }
+		bool IsKnownClosed() { return knownClosed; }
+		void SetKnownClosed() { knownClosed = true; }
 	};
 
 	class Poller { public:
@@ -443,15 +444,15 @@ namespace S2 {
 				stage = 1; m_sockm.push_back(w);
 				stage = 2; m_poller.PushBack(ps);
 			} catch (exception &e) {
-				try { switch (stage) { case 1: m_sockp.pop_back(); case 2: m_sockm.pop_back(); } } catch (exception &e2) { LOG(FATAL) << "Recovery Failure"; };
+				try { switch (stage) { case 1: m_sockp.pop_back(); case 2: m_sockm.pop_back(); } } catch (exception &e) { LOG(FATAL) << "Recovery Failure"; };
 				throw;
 			}
 			mSockCnt++;
 		}
 
-		void RemoveItemMulti(StagedRead_t &sre) {
-			if (! sre.size()) return;
-			if (! sre.back().idx < mSockCnt) throw exception("Attempt to remove nonexistent"); /* FIXME: */
+		void RemoveItemMulti_X(StagedRead_t &sre) {
+			if (!sre.size()) return;
+			if (!(sre.back().idx < mSockCnt)) throw exception("Attempt to remove nonexistent"); /* FIXME: */
 
 			assert(mSockCnt == m_sockp.size() == m_sockm.size() == m_poller.Size());
 
@@ -496,7 +497,7 @@ namespace S2 {
 		}
 
 		void AssurePfd() {
-			assert(m_sockp.size() == m_sockm.size() == m_poller.Size());
+			assert(mSockCnt == m_sockp.size() == m_sockm.size() == m_poller.Size());
 			// Sticking inactive Pfds into the Poller function is legitimate, not needed
 			// FIXME: Should probably be pruning expired-weakptr entries though
 		};
@@ -508,6 +509,9 @@ namespace S2 {
 			shared_ptr<StagedRead_t>       retr = make_shared<StagedRead_t>();
 			shared_ptr<StagedDisconnect_t> retd = make_shared<StagedDisconnect_t>();
 			Staged_t ret = { retr, retd };
+
+			/* Early return. Seems that as with 'select', empty 'poll' kills winsock */
+			if (m_poller.Size() == 0) return ret;
 
 			AssurePfd();
 			m_poller.ReadyForPoll();
@@ -554,9 +558,29 @@ namespace S2 {
 			for (auto &i : sdt) {
 				LOG(INFO) << "Processing Staged Disconnect. Graceful: " << bool(i.gracefulp);
 				shared_ptr<ManagedSock> w = i.ms.lock(); assert(w); /* FIXME: Handle ghost */
-				w->KnownClosed();
+				w->SetKnownClosed();
 			}
 		}
+
+		void RemoveKnownClosed() {
+			vector<weak_ptr<PrimitiveSock> > newp;
+			vector<weak_ptr<ManagedSock> > newm;
+			vector<pollfd> newl;
+
+			for (size_t i = 0; i < mSockCnt; i++) {
+				if (m_sockm[i].lock()->IsKnownClosed())
+					continue;
+				newp.push_back(m_sockp[i]);
+				newm.push_back(m_sockm[i]);
+				newl.push_back(m_poller.pfd[i]);
+			}
+
+			swap(m_sockp, newp);
+			swap(m_sockm, newm);
+			swap(m_poller.pfd, newl);
+
+			mSockCnt = m_poller.Size();
+		};
 
 		static shared_ptr<ManagedSock> MakeMgdSkt(shared_ptr<ManagedGroup> mg, shared_ptr<PrimitiveSock> ps) {
 			return mg->RegSock(ps);
@@ -703,6 +727,7 @@ int main()
 			auto w = mg->StagedRead();
 			S::ManagedGroup::StagedReadApply(*w.r);
 			S::ManagedGroup::StagedDisconnectApply(*w.d);
+			mg->RemoveKnownClosed();
 		}
 	}
 
