@@ -497,7 +497,7 @@ namespace S2 {
 		}
 
 		void AssurePfd() {
-			assert(mSockCnt == m_sockp.size() == m_sockm.size() == m_poller.Size());
+			size_t a = mSockCnt; assert(a == m_sockp.size() && a == m_sockm.size() && a == m_poller.Size());
 			// Sticking inactive Pfds into the Poller function is legitimate, not needed
 			// FIXME: Should probably be pruning expired-weakptr entries though
 		};
@@ -522,7 +522,7 @@ namespace S2 {
 			if (r > 0) {
 				for (size_t i = 0; i < m_poller.Size() && m_poller.pfd[i].revents & (POLLIN | POLLOUT); i++) {
 					try {
-						shared_ptr<PrimitiveSock> t = m_sockp[i].lock(); assert(t);
+						shared_ptr<PrimitiveSock> t = m_sockp[i].lock(); assert(t); /* FIXME: Handle ghost */
 						deque<Fragment> w;
 
 						try { t->ReadU(&w); } catch (NetBlockExc &e) {}
@@ -568,7 +568,7 @@ namespace S2 {
 			vector<pollfd> newl;
 
 			for (size_t i = 0; i < mSockCnt; i++) {
-				if (m_sockm[i].lock()->IsKnownClosed())
+				if (m_sockm[i].lock()->IsKnownClosed()) /* FIXME: Handle ghost */
 					continue;
 				newp.push_back(m_sockp[i]);
 				newm.push_back(m_sockm[i]);
@@ -721,9 +721,15 @@ int main()
 		vector<shared_ptr<S::PrimitiveSock> > svec;
 		while(!(svec = pl->Accept()).size()) {}
 
-		auto ms = S::ManagedGroup::MakeMgdSkt(mg, svec.at(0)); 
+		auto ms = S::ManagedGroup::MakeMgdSkt(mg, svec.at(0));
+
+		vector<shared_ptr<S::PrimitiveSock> > tmpPsv;
+		vector<shared_ptr<S::ManagedSock> > tmpMsv;
 
 		while(1) {
+			vector<shared_ptr<S::PrimitiveSock> > svec = pl->Accept();
+			for (auto &i : svec) { tmpPsv.push_back(i); tmpMsv.push_back(S::ManagedGroup::MakeMgdSkt(mg, i)); }
+
 			auto w = mg->StagedRead();
 			S::ManagedGroup::StagedReadApply(*w.r);
 			S::ManagedGroup::StagedDisconnectApply(*w.d);
