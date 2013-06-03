@@ -29,232 +29,232 @@ using namespace std;
 namespace Socket
 {
 
-typedef uint32_t Stamp;
+	typedef uint32_t Stamp;
 
-Stamp  EmptyStamp()
-{
-	return 0xBBAACCFF;
-}
-
-bool ErrorWouldBlock()
-{
-	int e = WSAGetLastError();
-	return e == WSAEWOULDBLOCK || e == WSAEINTR || e == WSAEINPROGRESS;
-}
-
-class FrameState
-{
-
-};
-
-class Fragment
-{
-public:
-	Stamp stamp;
-	string data;
-};
-
-class Primitive
-{
-public:
-	// Should be deque
-	deque<Fragment> in;
-	deque<Fragment> out;
-private:
-	unique_ptr<SOCKET> rawsock;
-public:
-	Primitive(unique_ptr<SOCKET> s)
+	Stamp  EmptyStamp()
 	{
-		rawsock = move(s);
+		return 0xBBAACCFF;
 	}
 
-	~Primitive()
+	bool ErrorWouldBlock()
 	{
-		closesocket(*rawsock);
+		int e = WSAGetLastError();
+		return e == WSAEWOULDBLOCK || e == WSAEINTR || e == WSAEINPROGRESS;
 	}
 
-	void NetworkActivity()
+	class FrameState
 	{
-		// Writes
+
+	};
+
+	class Fragment
+	{
+	public:
+		Stamp stamp;
+		string data;
+	};
+
+	class Primitive
+	{
+	public:
+		// Should be deque
+		deque<Fragment> in;
+		deque<Fragment> out;
+	private:
+		unique_ptr<SOCKET> rawsock;
+	public:
+		Primitive(unique_ptr<SOCKET> s)
 		{
-			bool blocked = false;
+			rawsock = move(s);
+		}
 
-			while (!(blocked || out.empty())) {
-				Fragment fragment = out.front();
+		~Primitive()
+		{
+			closesocket(*rawsock);
+		}
 
-				int nsent = send(*rawsock, fragment.data.c_str(), fragment.data.size(), 0);
+		void NetworkActivity()
+		{
+			// Writes
+			{
+				bool blocked = false;
 
-				if (nsent != SOCKET_ERROR)
-				{
-					Fragment newfrag(fragment);
-					newfrag.data = newfrag.data.substr(nsent, newfrag.data.npos);
+				while (!(blocked || out.empty())) {
+					Fragment fragment = out.front();
 
-					out.pop_front();
+					int nsent = send(*rawsock, fragment.data.c_str(), fragment.data.size(), 0);
 
-					if (!newfrag.data.empty())
-						out.push_front(newfrag);
+					if (nsent != SOCKET_ERROR)
+					{
+						Fragment newfrag(fragment);
+						newfrag.data = newfrag.data.substr(nsent, newfrag.data.npos);
+
+						out.pop_front();
+
+						if (!newfrag.data.empty())
+							out.push_front(newfrag);
+					}
+					else if (ErrorWouldBlock())
+						blocked = true;
+					else
+						throw MEHTHROW("Send");
 				}
-				else if (ErrorWouldBlock())
-					blocked = true;
-				else
-					throw MEHTHROW("Send");
+			}
+
+			// Reads
+			{
+				bool blocked = false;
+
+				while (!(blocked || out.empty())) {
+					char *incoming_c = new char[MAGIC_READ_SIZE];
+
+					int nread = recv(*rawsock, incoming_c, MAGIC_READ_SIZE, 0);
+
+					string incoming;
+					if (nread != SOCKET_ERROR && nread != 0)
+						incoming = string(incoming, incoming + nread);
+					delete[] incoming_c;
+
+					if (nread == 0)
+						assert (false && "Closed normally - Not handled TODO");
+					if (nread != SOCKET_ERROR)
+					{
+						// TODO: Empty stamp
+						Fragment newfrag;
+						newfrag.stamp = EmptyStamp();
+						newfrag.data = incoming;
+
+						in.push_back(newfrag);
+					}
+					else if (ErrorWouldBlock())
+						blocked = true;
+					else
+						throw MEHTHROW("Send");
+				}
+			}
+		}
+	};
+
+	class Cursor
+	{
+		Stamp stamp;
+	};
+
+	class Managed
+	{
+		Primitive prim;
+		vector<Cursor> cursor;
+	};
+
+	class PrimitiveListening
+	{
+		SOCKET sock;
+
+	public:
+
+		PrimitiveListening()
+		{
+			struct addrinfo *res = nullptr;
+			struct addrinfo hints = {0};
+			hints.ai_family = AF_INET;
+			hints.ai_socktype = SOCK_STREAM;
+			hints.ai_protocol = 0;
+			hints.ai_flags = AI_PASSIVE;
+
+			SOCKET listen_sock = INVALID_SOCKET;
+
+			try {
+
+				if (getaddrinfo(nullptr, "27010", &hints, &res))
+					throw exception("Getaddrinfo");
+
+				if ((listen_sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol)) == INVALID_SOCKET)
+					throw exception("Socket creation");
+
+				if (bind(listen_sock, res->ai_addr, res->ai_addrlen) == SOCKET_ERROR)
+					throw exception("Socket bind");
+
+				if (listen(listen_sock, SOMAXCONN) == SOCKET_ERROR)
+					throw exception("Socket listen");
+
+				u_long blockmode = 1;
+				if (ioctlsocket(listen_sock, FIONBIO, &blockmode) != NO_ERROR)
+					throw exception("Socket nonblocking mode");
+
+				freeaddrinfo(res);
+
+				sock = listen_sock;
+
+			} catch (exception &) {
+				if (res) freeaddrinfo(res);
+				if (listen_sock != INVALID_SOCKET) closesocket(listen_sock);
+				throw;
 			}
 		}
 
-		// Reads
+		~PrimitiveListening()
 		{
+			closesocket(sock);
+		}
+
+		vector<shared_ptr<Primitive>> Accept()
+		{
+			vector<unique_ptr<SOCKET>> w;
+
 			bool blocked = false;
 
-			while (!(blocked || out.empty())) {
-				char *incoming_c = new char[MAGIC_READ_SIZE];
+			while (!blocked) {
+				SOCKET s = accept(sock, nullptr, nullptr);
 
-				int nread = recv(*rawsock, incoming_c, MAGIC_READ_SIZE, 0);
-
-				string incoming;
-				if (nread != SOCKET_ERROR && nread != 0)
-					incoming = string(incoming, incoming + nread);
-				delete[] incoming_c;
-
-				if (nread == 0)
-					assert (false && "Closed normally - Not handled TODO");
-				if (nread != SOCKET_ERROR)
-				{
-					// TODO: Empty stamp
-					Fragment newfrag;
-					newfrag.stamp = EmptyStamp();
-					newfrag.data = incoming;
-
-					in.push_back(newfrag);
-				}
+				if (s != INVALID_SOCKET)
+					w.push_back(unique_ptr<SOCKET>(new SOCKET(s)));
 				else if (ErrorWouldBlock())
 					blocked = true;
 				else
-					throw MEHTHROW("Send");
+					throw MEHTHROW("Accept");
+			}
+
+			vector<shared_ptr<Primitive>> r;
+
+			transform(w.begin(), w.end(), back_inserter(r), [](unique_ptr<SOCKET> &p) {
+				return make_shared<Primitive>(move(p));
+			});
+
+			return r;
+		}
+	};
+
+	class PrimitiveManager
+	{
+		PrimitiveListening list;
+		vector<shared_ptr<Primitive>> prim;
+
+	public:
+
+		PrimitiveManager()
+		{
+		}
+
+		void FrameActivity()
+		{
+			vector<shared_ptr<Primitive>> w = list.Accept();
+
+			vector<shared_ptr<Primitive>> merged;
+			merged.insert(merged.end(), prim.begin(), prim.end());
+			merged.insert(merged.end(), w.begin(), w.end());
+
+			for (auto &i : merged) {
+
 			}
 		}
-	}
-};
 
-class Cursor
-{
-	Stamp stamp;
-};
+	private:
 
-class Managed
-{
-	Primitive prim;
-	vector<Cursor> cursor;
-};
-
-class PrimitiveListening
-{
-	SOCKET sock;
-
-public:
-
-	PrimitiveListening()
-	{
-		struct addrinfo *res = nullptr;
-		struct addrinfo hints = {0};
-		hints.ai_family = AF_INET;
-		hints.ai_socktype = SOCK_STREAM;
-		hints.ai_protocol = 0;
-		hints.ai_flags = AI_PASSIVE;
-
-		SOCKET listen_sock = INVALID_SOCKET;
-
-		try {
-
-			if (getaddrinfo(nullptr, "27010", &hints, &res))
-				throw exception("Getaddrinfo");
-
-			if ((listen_sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol)) == INVALID_SOCKET)
-				throw exception("Socket creation");
-
-			if (bind(listen_sock, res->ai_addr, res->ai_addrlen) == SOCKET_ERROR)
-				throw exception("Socket bind");
-
-			if (listen(listen_sock, SOMAXCONN) == SOCKET_ERROR)
-				throw exception("Socket listen");
-
-			u_long blockmode = 1;
-			if (ioctlsocket(listen_sock, FIONBIO, &blockmode) != NO_ERROR)
-				throw exception("Socket nonblocking mode");
-
-			freeaddrinfo(res);
-
-			sock = listen_sock;
-
-		} catch (exception &) {
-			if (res) freeaddrinfo(res);
-			if (listen_sock != INVALID_SOCKET) closesocket(listen_sock);
-			throw;
-		}
-	}
-
-	~PrimitiveListening()
-	{
-		closesocket(sock);
-	}
-
-	vector<shared_ptr<Primitive>> Accept()
-	{
-		vector<unique_ptr<SOCKET>> w;
-
-		bool blocked = false;
-
-		while (!blocked) {
-			SOCKET s = accept(sock, nullptr, nullptr);
-
-			if (s != INVALID_SOCKET)
-				w.push_back(unique_ptr<SOCKET>(new SOCKET(s)));
-			else if (ErrorWouldBlock())
-				blocked = true;
-			else
-				throw MEHTHROW("Accept");
+		vector<shared_ptr<Primitive>> Accept()
+		{
 		}
 
-		vector<shared_ptr<Primitive>> r;
-
-		transform(w.begin(), w.end(), back_inserter(r), [](unique_ptr<SOCKET> &p) {
-			return make_shared<Primitive>(move(p));
-		});
-
-		return r;
-	}
-};
-
-class PrimitiveManager
-{
-	PrimitiveListening list;
-	vector<shared_ptr<Primitive>> prim;
-
-public:
-
-	PrimitiveManager()
-	{
-	}
-
-	void FrameActivity()
-	{
-		vector<shared_ptr<Primitive>> w = list.Accept();
-
-		vector<shared_ptr<Primitive>> merged;
-		merged.insert(merged.end(), prim.begin(), prim.end());
-		merged.insert(merged.end(), w.begin(), w.end());
-
-		for (auto &i : merged) {
-
-		}
-	}
-
-private:
-
-	vector<shared_ptr<Primitive>> Accept()
-	{
-	}
-
-};
+	};
 
 };
 
@@ -285,9 +285,10 @@ namespace S2 {
 
 	typedef uint32_t Stamp;
 
-	#define POLL_VAL_DUMMY (-1)
+#define POLL_VAL_DUMMY (-1)
 
-	class PollFdType { public:
+	class PollFdType {
+	public:
 		SOCKET socketfd;
 		static PollFdType Make(SOCKET s) { PollFdType w; w.socketfd = s; return w; }
 		static void ExtractInto(const PollFdType& fd, pollfd *pfd) { pfd->fd = fd.socketfd; }
@@ -308,19 +309,22 @@ namespace S2 {
 		return 0xBBAACCFF;
 	}
 
-	class Fragment { public:
+	class Fragment {
+	public:
 		Stamp stamp;
 		string data;
 		Fragment(const Stamp &s, const string &d) : stamp(s), data(d) {}
 	};
 
-	class PrimitiveBase { public:
+	class PrimitiveBase {
+	public:
 		virtual void WriteU(deque<Fragment>* w) = 0;
 		virtual void ReadU(deque<Fragment>* w) = 0;
 		virtual PollFdType GetPollFd() { return PollFdType::Make(POLL_VAL_DUMMY); }
 	};
 
-	class PrimitiveMemonly : public PrimitiveBase { public:
+	class PrimitiveMemonly : public PrimitiveBase {
+	public:
 		deque<Fragment> write;
 		deque<Fragment> read;
 		void WriteU(deque<Fragment>* w) {
@@ -334,7 +338,8 @@ namespace S2 {
 		}
 	};
 
-	class PrimitiveSock : public PrimitiveBase { public:
+	class PrimitiveSock : public PrimitiveBase {
+	public:
 		PollFdType s;
 
 		PrimitiveSock(PollFdType s) : s(s) {}
@@ -350,24 +355,27 @@ namespace S2 {
 					if (ErrorWouldBlock()) throw NetBlockExc();
 					else                   throw NetFailureExc();
 
-				w->push_back(Fragment(EmptyStamp(), string(buf, r)));
+					w->push_back(Fragment(EmptyStamp(), string(buf, r)));
 
-				LOG(INFO) << "Read " << string(buf, r);
+					LOG(INFO) << "Read " << string(buf, r);
 			}
 		}
 		virtual PollFdType GetPollFd() { return s; }	
 	};
 
-	class PrimitiveZombie : public PrimitiveBase { public:
+	class PrimitiveZombie : public PrimitiveBase {
+	public:
 		void WriteU(deque<Fragment>* w) { throw NetBlockExc(); }
 		void ReadU(deque<Fragment>* w) { throw NetBlockExc(); }
 	};
 
-	class ManagedBase { public:
+	class ManagedBase {
+	public:
 		deque<Fragment> in, out;
 	};
 
-	class ManagedSock : public ManagedBase { public:
+	class ManagedSock : public ManagedBase { 
+	public:
 		bool knownClosed;
 
 		ManagedSock() : knownClosed(false) {}
@@ -376,7 +384,8 @@ namespace S2 {
 		void SetKnownClosed() { knownClosed = true; }
 	};
 
-	class Poller { public:
+	class Poller { 
+	public:
 		vector<pollfd> pfd;
 
 		size_t Size() {
@@ -405,14 +414,14 @@ namespace S2 {
 		typedef vector<StagedReadEntry> StagedRead_t;
 		typedef vector<StagedDisconnectEntry> StagedDisconnect_t;
 		typedef struct { shared_ptr<StagedRead_t> r; shared_ptr<StagedDisconnect_t> d; } Staged_t;
-	
+
 	private:
 		vector<weak_ptr<PrimitiveSock> > m_sockp;
 		vector<weak_ptr<ManagedSock> > m_sockm;
 		Poller m_poller;
 
 		size_t mSockCnt;
-		
+
 		//vector<shared_ptr<Managed> > m_rest;
 
 		void AddItem(shared_ptr<PrimitiveSock> ps, shared_ptr<ManagedSock> w) {
@@ -493,7 +502,7 @@ namespace S2 {
 
 			int r = WSAPoll(m_poller.pfd.data(), m_poller.Size(), 0);
 			if (r == SOCKET_ERROR) throw NetFailureExc();
-			
+
 			if (r > 0) {
 				for (size_t i = 0; i < m_poller.Size() && m_poller.pfd[i].revents & (POLLIN | POLLOUT); i++) {
 					deque<Fragment> w;
@@ -563,7 +572,8 @@ namespace S2 {
 		}
 	};
 
-	class PrimitiveListening { public:
+	class PrimitiveListening {
+	public:
 		SOCKET sock;
 
 		PrimitiveListening() {
@@ -641,7 +651,8 @@ namespace S3 {
 		Packet
 	};
 
-	class Pipe { public:
+	class Pipe {
+	public:
 		PipeType pt;
 	};
 
@@ -661,14 +672,15 @@ namespace S3 {
 	//
 	// class Abc { Base x; }; vs class Abc { Base getX(); };
 
-	class PipeMaker { public:
-	static shared_ptr<PipePacket> MakePacket(shared_ptr<PrimitiveBase> pb, shared_ptr<ManagedBase> mgd) {
-		shared_ptr<PipePacket> pl = make_shared<PipePacket>();
-		pl->pt = PipeType::Packet;
-		pl->pb = pb;
-		pl->mgd = mgd;
-		return pl;
-	}
+	class PipeMaker {
+	public:
+		static shared_ptr<PipePacket> MakePacket(shared_ptr<PrimitiveBase> pb, shared_ptr<ManagedBase> mgd) {
+			shared_ptr<PipePacket> pl = make_shared<PipePacket>();
+			pl->pt = PipeType::Packet;
+			pl->pb = pb;
+			pl->mgd = mgd;
+			return pl;
+		}
 	};
 
 };
