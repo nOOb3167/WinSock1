@@ -265,8 +265,7 @@ class WinsockWrap
 {
 	WSADATA wsd;
 public:
-	WinsockWrap()
-	{
+	WinsockWrap() {
 		int r = 0;
 		try {
 			if (r = WSAStartup(MAKEWORD(2, 2), &wsd) || LOBYTE(wsd.wVersion) != 2 || HIBYTE(wsd.wVersion) != 2)
@@ -277,8 +276,7 @@ public:
 		}
 	}
 
-	~WinsockWrap()
-	{
+	~WinsockWrap() {
 		WSACleanup();
 	}
 };
@@ -313,11 +311,7 @@ namespace S2 {
 	class Fragment { public:
 		Stamp stamp;
 		string data;
-	};
-
-	class FragmentTransfer { public:
-		deque<Fragment> write;
-		deque<Fragment> read;
+		Fragment(const Stamp &s, const string &d) : stamp(s), data(d) {}
 	};
 
 	class PrimitiveBase { public:
@@ -347,25 +341,18 @@ namespace S2 {
 
 		virtual void WriteU(deque<Fragment>* w) { assert(0); }
 		virtual void ReadU(deque<Fragment>* w) {
-			const uint32_t magicReadSize = MAGIC_READ_SIZE;
-			char buf[magicReadSize];
+			char buf[MAGIC_READ_SIZE];
 
-			bool blocked = false;
-
-			while (!blocked) {
-				int r = recv(s.socketfd, buf, magicReadSize, 0);
+			for (;;) {
+				int r = recv(s.socketfd, buf, MAGIC_READ_SIZE, 0);
 				if (r == 0)                throw NetDisconnectExc();
 				if (r == SOCKET_ERROR)
 					if (ErrorWouldBlock()) throw NetBlockExc();
 					else                   throw NetFailureExc();
 
-				Fragment frag;
-				frag.stamp = EmptyStamp();
-				frag.data = string(buf, r);
+				w->push_back(Fragment(EmptyStamp(), string(buf, r)));
 
-				w->push_back(frag);
-
-				LOG(INFO) << "Read " << frag.data.c_str();
+				LOG(INFO) << "Read " << string(buf, r);
 			}
 		}
 		virtual PollFdType GetPollFd() { return s; }	
@@ -378,15 +365,6 @@ namespace S2 {
 
 	class ManagedBase { public:
 		deque<Fragment> in, out;
-	};
-
-	class Managed { public:
-		shared_ptr<PrimitiveBase> prim;
-		deque<Fragment> in, out;
-		void Transfer() {
-			try { prim->ReadU(&in); } catch (NetBlockExc &e) {}
-			try { prim->WriteU(&out); } catch (NetBlockExc &e) {}
-		}
 	};
 
 	class ManagedSock : public ManagedBase { public:
@@ -435,7 +413,7 @@ namespace S2 {
 
 		size_t mSockCnt;
 		
-		vector<shared_ptr<Managed> > m_rest;
+		//vector<shared_ptr<Managed> > m_rest;
 
 		void AddItem(shared_ptr<PrimitiveSock> ps, shared_ptr<ManagedSock> w) {
 			int stage;
@@ -496,16 +474,14 @@ namespace S2 {
 			return w;
 		}
 
-		void AssurePfd() {
-			size_t a = mSockCnt; assert(a == m_sockp.size() && a == m_sockm.size() && a == m_poller.Size());
-			// Sticking inactive Pfds into the Poller function is legitimate, not needed
-			// FIXME: Should probably be pruning expired-weakptr entries though
-		};
+		void AssureSockCnt() { size_t a = mSockCnt; assert(a == m_sockp.size() && a == m_sockm.size() && a == m_poller.Size()); }
 
 	public:
 		ManagedGroup() : mSockCnt(0) {}
 
 		Staged_t StagedRead() {
+			AssureSockCnt();
+
 			shared_ptr<StagedRead_t>       retr = make_shared<StagedRead_t>();
 			shared_ptr<StagedDisconnect_t> retd = make_shared<StagedDisconnect_t>();
 			Staged_t ret = { retr, retd };
@@ -513,7 +489,6 @@ namespace S2 {
 			/* Early return. Seems that as with 'select', empty 'poll' kills winsock */
 			if (m_poller.Size() == 0) return ret;
 
-			AssurePfd();
 			m_poller.ReadyForPoll();
 
 			int r = WSAPoll(m_poller.pfd.data(), m_poller.Size(), 0);
@@ -521,24 +496,25 @@ namespace S2 {
 			
 			if (r > 0) {
 				for (size_t i = 0; i < m_poller.Size() && m_poller.pfd[i].revents & (POLLIN | POLLOUT); i++) {
+					deque<Fragment> w;
+
 					try {
 						shared_ptr<PrimitiveSock> t = m_sockp[i].lock(); assert(t); /* FIXME: Handle ghost */
-						deque<Fragment> w;
-
-						try { t->ReadU(&w); } catch (NetBlockExc &e) {}
-
-						if (!w.empty()) {
-							StagedReadEntry mgre = {i, m_sockm[i], deque<Fragment>()};
-							/* Push a dummy deque first, then swap ReadU's data in */
-							retr->push_back(mgre);
-							retr->at(retr->size() - 1).rd.swap(w);
-						}
+						t->ReadU(&w);
+					} catch (NetBlockExc &e) {
+						/* Nothing */
 					} catch (NetDisconnectExc &e) {
 						StagedDisconnectEntry mgde = {i, m_sockm[i], true};
 						retd->push_back(mgde);
 					} catch (NetFailureExc &e) {
 						StagedDisconnectEntry mgde = {i, m_sockm[i], false};
 						retd->push_back(mgde);
+					}
+
+					/* Might have read something even if a disconnect or failure occurred */
+					if (!w.empty()) {
+						StagedReadEntry mgre = {i, m_sockm[i], w};
+						retr->push_back(mgre);
 					}
 				}
 			}
@@ -547,10 +523,10 @@ namespace S2 {
 		}
 
 		static void StagedReadApply(const StagedRead_t& srt) {
-			for (size_t i = 0; i < srt.size(); i++) {
-				LOG(INFO) << "Processing Staged Read: " << accumulate(srt[i].rd.begin(), srt[i].rd.end(), string(), [](string &x, const Fragment &y){return x+=y.data;});
-				shared_ptr<ManagedSock> w = srt[i].ms.lock(); assert(w);
-				w->in.insert(w->in.end(), srt[i].rd.begin(), srt[i].rd.end());
+			for (auto &i : srt) {
+				LOG(INFO) << "Processing Staged Read: " << accumulate(i.rd.begin(), i.rd.end(), string(), [](string &x, const Fragment &y){return x+=y.data;});
+				shared_ptr<ManagedSock> w = i.ms.lock(); assert(w); /* FIXME: Handle ghost (Applicable?) */
+				w->in.insert(w->in.end(), i.rd.begin(), i.rd.end());
 			}
 		}
 
@@ -636,28 +612,22 @@ namespace S2 {
 
 		vector<shared_ptr<PrimitiveSock>> Accept()
 		{
+			vector<shared_ptr<PrimitiveSock>> ret;
 			vector<SOCKET> w;
 
-			bool blocked = false;
+			try {
+				for (;;) {
+					SOCKET s = accept(sock, nullptr, nullptr);
+					if (s != INVALID_SOCKET) w.push_back(SOCKET(s));
+					if (s == INVALID_SOCKET)
+						if (ErrorWouldBlock()) throw NetBlockExc();
+						else                   throw NetFailureExc();
+				}
+			} catch (NetBlockExc &e) {}
 
-			while (!blocked) {
-				SOCKET s = accept(sock, nullptr, nullptr);
+			transform(w.begin(), w.end(), back_inserter(ret), [](SOCKET &p) { return make_shared<PrimitiveSock>(PollFdType::Make(p)); });
 
-				if (s != INVALID_SOCKET)
-					w.push_back(SOCKET(s));
-				else if (ErrorWouldBlock())
-					blocked = true;
-				else
-					throw exception("Accept");
-			}
-
-			vector<shared_ptr<PrimitiveSock>> r;
-
-			transform(w.begin(), w.end(), back_inserter(r), [](SOCKET &p) {
-				return make_shared<PrimitiveSock>(PollFdType::Make(p));
-			});
-
-			return r;
+			return ret;
 		}
 	};
 
@@ -718,15 +688,10 @@ int main()
 		auto pl = make_shared<S::PrimitiveListening>();
 		auto mg = make_shared<S::ManagedGroup>();
 
-		vector<shared_ptr<S::PrimitiveSock> > svec;
-		while(!(svec = pl->Accept()).size()) {}
-
-		auto ms = S::ManagedGroup::MakeMgdSkt(mg, svec.at(0));
-
 		vector<shared_ptr<S::PrimitiveSock> > tmpPsv;
 		vector<shared_ptr<S::ManagedSock> > tmpMsv;
 
-		while(1) {
+		for (;;) {
 			vector<shared_ptr<S::PrimitiveSock> > svec = pl->Accept();
 			for (auto &i : svec) { tmpPsv.push_back(i); tmpMsv.push_back(S::ManagedGroup::MakeMgdSkt(mg, i)); }
 
