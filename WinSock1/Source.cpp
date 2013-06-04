@@ -6,9 +6,12 @@
 #include <memory>
 #include <vector>
 #include <deque>
+#include <set>
+#include <map>
 #include <algorithm>
 #include <iterator>
 #include <numeric> /* accumulate */
+#include <sstream>
 
 #include <loginc.h>
 
@@ -22,6 +25,8 @@
 #define MAGIC_READ_SIZE 1024
 
 using namespace std;
+
+string Uint32ToString(uint32_t x) { std::stringstream ss; ss << x; std::string str; ss >> str; return str; }
 
 /////////////////////////////////////////////
 #if 0
@@ -620,6 +625,23 @@ namespace S2 {
 			closesocket(sock);
 		}
 
+		vector<PollFdType> Accept2()
+		{
+			vector<PollFdType> ret;
+
+			try {
+				for (;;) {
+					SOCKET s = accept(sock, nullptr, nullptr);
+					if (s != INVALID_SOCKET) ret.push_back(PollFdType::Make(SOCKET(s)));
+					if (s == INVALID_SOCKET)
+						if (ErrorWouldBlock()) throw NetBlockExc();
+						else                   throw NetFailureExc();
+				}
+			} catch (NetBlockExc &e) {}
+
+			return ret;
+		}
+
 		vector<shared_ptr<PrimitiveSock>> Accept()
 		{
 			vector<shared_ptr<PrimitiveSock>> ret;
@@ -685,9 +707,112 @@ namespace S3 {
 
 };
 
+namespace Messy {
+	using namespace S2;
+
+	const uint32_t gMaxTokens = 100;
+
+	class ConToken {
+	public:
+		uint32_t id;
+		ConToken(uint32_t id) : id(id) {}
+	};
+
+	struct ConTokenLess : std::binary_function<ConToken, ConToken, bool> {
+		bool operator() (const ConToken &lhs, const ConToken &rhs) const {
+			return lhs.id < rhs.id;
+		}
+	};
+
+	class ConTokenGen {
+		set<ConToken, ConTokenLess> toks;
+	public:
+		ConTokenGen() { for (int i = 0; i < gMaxTokens; i++) toks.insert(ConToken(i)); }
+
+		ConToken GetToken() {
+			if (!toks.size()) throw exception("Out of tokens");
+			ConToken w = *toks.begin();
+			toks.erase(toks.begin());
+			return w;
+		}
+
+		void ReturnToken(ConToken tok) {
+			toks.insert(tok);
+		}
+	};
+
+	class MessSock {
+		struct CtData {
+			PollFdType pfd;
+			deque<Fragment> in;
+			deque<Fragment> out;
+			bool knownClosed;
+			CtData(PollFdType pfd) : pfd(pfd), in(), out(), knownClosed(false) {}
+		};
+
+		ConTokenGen tokenGen;
+		map<ConToken, CtData, ConTokenLess> cons;
+		vector<pollfd> pfds;
+
+		void RebuildPoll() {
+			pfds.resize(cons.size());
+			size_t idx = 0;
+			for (auto &i : cons) PollFdType::ExtractInto(i.second.pfd, &pfds.data()[idx++]);
+		}
+
+		void ReadyForPoll() {
+			for (size_t i = 0; i < pfds.size(); i++) {
+				pfds[i].events = POLLIN | POLLOUT;
+				pfds[i].revents = 0;
+			}
+		};
+
+		void AddConsMulti(const vector<PollFdType>& pfds, const vector<ConToken> toks, const vector<CtData> cts) {
+			size_t i;
+
+			try {
+				for (i = 0; i < pfds.size(); i++)
+					if (!cons.insert(make_pair(toks[i], cts[i])).second) throw exception();
+			} catch (exception &e) {
+				LOG(INFO) << "Insertion failure in AddConsMulti (Attempt to insert existing ConToken?)";
+
+				for (size_t j = 0; j < i; i++)
+					if (cons.erase(toks[i]) != 1) throw exception("Abort");
+
+				throw;
+			}
+		}
+
+	public:
+
+		void AcceptedConsMulti(const vector<PollFdType>& pfds) {
+			if (!pfds.size()) return;
+
+			vector<ConToken> newToks;
+			vector<CtData> newCts;
+			try {
+				for (auto &i : pfds) newToks.push_back(tokenGen.GetToken());
+				for (auto &i : pfds) newCts.push_back(i);
+				AddConsMulti(pfds, newToks, newCts);
+			} catch (exception &e) {
+				for (auto &i : newToks) tokenGen.ReturnToken(i);
+			}
+
+			RebuildPoll();
+		}
+
+		vector<ConToken> GetConTokens() {
+			vector<ConToken> ret;
+			for (auto &i : cons) ret.push_back(i.first);
+			return ret;
+		}
+	};
+};
+
 int main()
 {
 	namespace S = S2;
+	namespace M = Messy;
 
 	FLAGS_logtostderr = 1;
 	google::InitGoogleLogging("WinSock1");
@@ -695,6 +820,20 @@ int main()
 	LOG(INFO) << "Hello";
 
 	WinsockWrap ww;
+
+	{
+		auto pl = make_shared<S::PrimitiveListening>();
+		auto m = make_shared<M::MessSock>();
+
+		for (;;) {
+			vector<S::PollFdType> svec = pl->Accept2();
+			m->AcceptedConsMulti(svec);
+
+			string s; for (auto &i : m->GetConTokens()) s+=Uint32ToString(i.id); LOG(INFO) << s;
+		}
+	}
+
+	return EXIT_SUCCESS;
 
 	{
 		auto pl = make_shared<S::PrimitiveListening>();
