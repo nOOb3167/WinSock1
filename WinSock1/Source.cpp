@@ -292,14 +292,6 @@ namespace S2 {
 
 #define POLL_VAL_DUMMY (-1)
 
-	class PollFdType {
-	public:
-		SOCKET socketfd;
-		static PollFdType Make(SOCKET s) { PollFdType w; w.socketfd = s; return w; }
-		static void ExtractInto(const PollFdType& fd, pollfd *pfd) { pfd->fd = fd.socketfd; }
-		static bool IsDummy(SOCKET s) { return s == POLL_VAL_DUMMY; }
-	};
-
 	class NetExc : ::std::exception {};
 	class NetFailureExc : NetExc {};
 	class NetDisconnectExc : NetFailureExc {};
@@ -320,6 +312,30 @@ namespace S2 {
 		string data;
 		Fragment(const Stamp &s, const string &d) : stamp(s), data(d) {}
 	};
+
+	class PollFdType {
+	public:
+		SOCKET socketfd;
+		static PollFdType Make(SOCKET s) { PollFdType w; w.socketfd = s; return w; }
+		static void ExtractInto(const PollFdType& fd, pollfd *pfd) { pfd->fd = fd.socketfd; }
+		static bool IsDummy(SOCKET s) { return s == POLL_VAL_DUMMY; }
+		static void Read(const PollFdType &pfd, deque<Fragment>* w) {
+			char buf[MAGIC_READ_SIZE];
+
+			for (;;) {
+				int r = recv(pfd.socketfd, buf, MAGIC_READ_SIZE, 0);
+				if (r == 0)                throw NetDisconnectExc();
+				if (r == SOCKET_ERROR)
+					if (ErrorWouldBlock()) throw NetBlockExc();
+					else                   throw NetFailureExc();
+
+					w->push_back(Fragment(EmptyStamp(), string(buf, r)));
+
+					LOG(INFO) << "Read " << string(buf, r);
+			}
+		}
+	};
+
 
 	class PrimitiveBase {
 	public:
@@ -754,6 +770,8 @@ namespace Messy {
 		map<ConToken, CtData, ConTokenLess> cons;
 		vector<pollfd> pfds;
 
+		uint32_t numCons;
+
 		void RebuildPoll() {
 			pfds.resize(cons.size());
 			size_t idx = 0;
@@ -785,6 +803,8 @@ namespace Messy {
 
 	public:
 
+		MessSock() : numCons(0) {}
+
 		void AcceptedConsMulti(const vector<PollFdType>& pfds) {
 			if (!pfds.size()) return;
 
@@ -799,6 +819,7 @@ namespace Messy {
 			}
 
 			RebuildPoll();
+			numCons += cons.size();
 		}
 
 		vector<ConToken> GetConTokens() {
@@ -806,7 +827,53 @@ namespace Messy {
 			for (auto &i : cons) ret.push_back(i.first);
 			return ret;
 		}
+
+		typedef struct { ConToken tok; deque<Fragment> in; } StagedRead_t;
+		typedef struct { ConToken tok; bool graceful; } StagedDisc_t;
+		typedef struct { vector<StagedRead_t> r; vector<StagedDisc_t> d; } Staged_t;
+
+		Staged_t StagedRead() {
+			Staged_t ret;
+
+			if (!numCons) return ret;
+
+			ReadyForPoll();
+
+			int r = WSAPoll(pfds.data(), numCons, 0);
+			if (r == SOCKET_ERROR) throw NetFailureExc();
+			if (r > 0) {
+				size_t idx = 0;
+				auto it = cons.begin();
+				for (; it != cons.end(); it++, idx++) {
+					if (!(pfds[idx].revents & (POLLIN | POLLOUT))) continue;
+
+					deque<Fragment> w;
+
+					try {
+						PollFdType::Read(it->second.pfd, &w);
+					} catch (NetBlockExc &e) {
+						/* Nothing */
+					} catch (NetDisconnectExc &e) {
+						StagedDisc_t mgde = { it->first, true };
+						ret.d.push_back(mgde);
+					} catch (NetFailureExc &e) {
+						StagedDisc_t mgde = { it->first, false };
+						ret.d.push_back(mgde);
+					}
+
+					/* Might have read something even if a disconnect or failure occurred */
+					if (!w.empty()) {
+						StagedRead_t mgre = { it->first, w };
+						ret.r.push_back(mgre);
+					}
+				}
+			}
+
+			return ret;
+		}
+
 	};
+
 };
 
 int main()
@@ -828,6 +895,8 @@ int main()
 		for (;;) {
 			vector<S::PollFdType> svec = pl->Accept2();
 			m->AcceptedConsMulti(svec);
+			auto sg = m->StagedRead();
+			if (sg.d.size()) LOG(INFO) << "sgdisc " << sg.d[0].graceful << " tok " << sg.d[0].tok.id;
 
 			string s; for (auto &i : m->GetConTokens()) s+=Uint32ToString(i.id); LOG(INFO) << s;
 		}
