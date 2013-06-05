@@ -843,6 +843,8 @@ namespace S3 {
 
 	using namespace S2;
 
+#define PACKET_PART_SIZE_LEN 4
+
 	enum class PipeType {
 		Packet
 	};
@@ -885,7 +887,31 @@ namespace S3 {
 
 		PipePacket() : in(make_shared<deque<Fragment> >()), out(make_shared<deque<Fragment> >()) {}
 
+		void GetN(const deque<Fragment> &que, string *accum, size_t *remaining) {
+			for (size_t i = 0; i < in->size() && *remaining > 0; i++) {
+				size_t have = (*in)[i].data.length();
+				size_t getting = have < *remaining ? have : *remaining;
+				accum->append((*in)[i].data.substr(0, getting));
+				*remaining -= getting;
+			}
+		}
+
+		pair<bool, uint32_t> GetSize(const deque<Fragment> &extra) {
+			struct { char c[PACKET_PART_SIZE_LEN]; uint32_t u; } d;
+
+			size_t remaining = sizeof d.c;
+			string data;
+
+			GetN(*in, &data, &remaining);
+			if (remaining) GetN(extra, &data, &remaining);
+
+			if (remaining) { return make_pair(false, 0); }
+			else { memcpy(d.c, data.data(), sizeof d.c); return make_pair(true, ntohl(d.u)); }
+		}
+
 		virtual PipePacket * RemakeForRead(vector<PostProcess> *pp, shared_ptr<Messy::MessSock::StagedRead_t> sr) {
+			/* Check for completed packet */
+
 			/* FIXME: CopyConstructed, AliasPointer on sr */
 			PipePacket *ret = new PipePacket(*this);
 			pp->push_back(PostProcessFragmentWrite(in, sr));
