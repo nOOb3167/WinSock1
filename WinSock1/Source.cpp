@@ -681,48 +681,6 @@ namespace S2 {
 
 };
 
-namespace S3 {
-
-	using namespace S2;
-
-	enum class PipeType {
-		Packet
-	};
-
-	class Pipe {
-	public:
-		PipeType pt;
-	};
-
-	class PipePacket : public Pipe {
-	public:
-		shared_ptr<PrimitiveBase> pb;
-		shared_ptr<ManagedBase> mgd;
-	};
-
-	//Only worthwile member of Prim is GetPollFD?
-	//MakeMgdSkt(MgdGroup, Prim) -> MgdGroup.Reg(Prim)
-	//MakeMgdMemonly() -> Nothing
-	//If going for a cursor design, mgd is probably it
-	//Maybe: No call downs into Prim, MgdGroup injects into Mgd queue OR stages, to be applied
-	//  Stages, bond by WeakPtr
-	//Mgd multiple groups: SockBased, EveryFrameCallbackBased
-	//
-	// class Abc { Base x; }; vs class Abc { Base getX(); };
-
-	class PipeMaker {
-	public:
-		static shared_ptr<PipePacket> MakePacket(shared_ptr<PrimitiveBase> pb, shared_ptr<ManagedBase> mgd) {
-			shared_ptr<PipePacket> pl = make_shared<PipePacket>();
-			pl->pt = PipeType::Packet;
-			pl->pb = pb;
-			pl->mgd = mgd;
-			return pl;
-		}
-	};
-
-};
-
 namespace Messy {
 	using namespace S2;
 
@@ -830,7 +788,12 @@ namespace Messy {
 
 		typedef struct { ConToken tok; deque<Fragment> in; } StagedRead_t;
 		typedef struct { ConToken tok; bool graceful; } StagedDisc_t;
-		typedef struct { vector<StagedRead_t> r; vector<StagedDisc_t> d; } Staged_t;
+
+		struct Staged_t {
+			shared_ptr<vector<StagedRead_t> > r;
+			shared_ptr<vector<StagedDisc_t> > d;
+			Staged_t() : r(make_shared<vector<StagedRead_t> >()), d(make_shared<vector<StagedDisc_t> >()) {}
+		};
 
 		Staged_t StagedRead() {
 			Staged_t ret;
@@ -855,16 +818,16 @@ namespace Messy {
 						/* Nothing */
 					} catch (NetDisconnectExc &e) {
 						StagedDisc_t mgde = { it->first, true };
-						ret.d.push_back(mgde);
+						ret.d->push_back(mgde);
 					} catch (NetFailureExc &e) {
 						StagedDisc_t mgde = { it->first, false };
-						ret.d.push_back(mgde);
+						ret.d->push_back(mgde);
 					}
 
 					/* Might have read something even if a disconnect or failure occurred */
 					if (!w.empty()) {
 						StagedRead_t mgre = { it->first, w };
-						ret.r.push_back(mgre);
+						ret.r->push_back(mgre);
 					}
 				}
 			}
@@ -872,6 +835,87 @@ namespace Messy {
 			return ret;
 		}
 
+	};
+
+};
+
+namespace S3 {
+
+	using namespace S2;
+
+	enum class PipeType {
+		Packet
+	};
+
+	struct PostProcess {
+		virtual void Process() const { LOG(ERROR) << "Empty PostProcess step"; throw exception(); };
+		void operator () (void) const { return Process(); };
+	};
+
+	class PipeI;
+	class PipeR;
+
+	class PipeI {
+		virtual PipeR * RemakeForRead(vector<PostProcess> *pp, shared_ptr<Messy::MessSock::StagedRead_t> sr) = 0;
+	};
+
+	class PipeR : public PipeI {
+	public:
+		PipeType pt;
+	};
+
+	class Pipe {
+	public:
+		shared_ptr<PipeR> pr;
+	};
+
+	struct PostProcessFragmentWrite : PostProcess {
+		shared_ptr<deque<Fragment> > deq;
+		shared_ptr<Messy::MessSock::StagedRead_t> sr;
+		PostProcessFragmentWrite(shared_ptr<deque<Fragment> > deq, shared_ptr<Messy::MessSock::StagedRead_t> sr) : deq(deq), sr(sr) {}
+		virtual void Process() const {
+			for (auto &i : sr->in) deq->push_back(i);
+		}
+	};
+
+	class PipePacket : public PipeR {
+	public:
+		shared_ptr<deque<Fragment> > in;
+		shared_ptr<deque<Fragment> > out;
+
+		PipePacket() : in(make_shared<deque<Fragment> >()), out(make_shared<deque<Fragment> >()) {}
+
+		virtual PipePacket * RemakeForRead(vector<PostProcess> *pp, shared_ptr<Messy::MessSock::StagedRead_t> sr) {
+			/* FIXME: CopyConstructed, AliasPointer on sr */
+			PipePacket *ret = new PipePacket(*this);
+			pp->push_back(PostProcessFragmentWrite(in, sr));
+		}
+	};
+
+	//Only worthwile member of Prim is GetPollFD?
+	//MakeMgdSkt(MgdGroup, Prim) -> MgdGroup.Reg(Prim)
+	//MakeMgdMemonly() -> Nothing
+	//If going for a cursor design, mgd is probably it
+	//Maybe: No call downs into Prim, MgdGroup injects into Mgd queue OR stages, to be applied
+	//  Stages, bond by WeakPtr
+	//Mgd multiple groups: SockBased, EveryFrameCallbackBased
+	//
+	// class Abc { Base x; }; vs class Abc { Base getX(); };
+
+	class PipeMaker {
+	public:
+		static shared_ptr<Pipe> MakePacket(shared_ptr<PrimitiveBase> pb, shared_ptr<ManagedBase> mgd) {
+			auto p = shared_ptr<Pipe>();
+			auto r = PipeMaker::MakePacketR(pb, mgd);
+			p->pr = r;
+			return p;
+		}
+
+		static shared_ptr<PipePacket> MakePacketR(shared_ptr<PrimitiveBase> pb, shared_ptr<ManagedBase> mgd) {
+			shared_ptr<PipePacket> pl = make_shared<PipePacket>();
+			pl->pt = PipeType::Packet;
+			return pl;
+		}
 	};
 
 };
@@ -896,7 +940,7 @@ int main()
 			vector<S::PollFdType> svec = pl->Accept2();
 			m->AcceptedConsMulti(svec);
 			auto sg = m->StagedRead();
-			if (sg.d.size()) LOG(INFO) << "sgdisc " << sg.d[0].graceful << " tok " << sg.d[0].tok.id;
+			if (sg.d->size()) LOG(INFO) << "sgdisc " << (*sg.d)[0].graceful << " tok " << (*sg.d)[0].tok.id;
 
 			string s; for (auto &i : m->GetConTokens()) s+=Uint32ToString(i.id); LOG(INFO) << s;
 		}
