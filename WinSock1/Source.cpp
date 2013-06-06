@@ -860,7 +860,7 @@ namespace S3 {
 	class PipeR;
 
 	class PipeI {
-		virtual PipeR * RemakeForRead(vector<PostProcess> *pp, shared_ptr<Messy::MessSock::StagedRead_t> sr) = 0;
+		virtual PipeR * RemakeForRead(vector<PostProcess> *pp, const Messy::MessSock::StagedRead_t &sr) = 0;
 	};
 
 	class PipeR : public PipeI {
@@ -875,10 +875,10 @@ namespace S3 {
 
 	struct PostProcessFragmentWrite : PostProcess {
 		shared_ptr<deque<Fragment> > deq;
-		shared_ptr<Messy::MessSock::StagedRead_t> sr;
-		PostProcessFragmentWrite(shared_ptr<deque<Fragment> > deq, shared_ptr<Messy::MessSock::StagedRead_t> sr) : deq(deq), sr(sr) {}
+		const Messy::MessSock::StagedRead_t &sr;
+		PostProcessFragmentWrite(shared_ptr<deque<Fragment> > deq, const Messy::MessSock::StagedRead_t &sr) : deq(deq), sr(sr) {}
 		virtual void Process() const {
-			for (auto &i : sr->in) deq->push_back(i);
+			for (auto &i : sr.in) deq->push_back(i);
 		}
 	};
 
@@ -947,12 +947,12 @@ namespace S3 {
 			out(make_shared<deque<Fragment> >()),
 			inPack(make_shared<deque<string> >()) {}
 
-		virtual PipePacket * RemakeForRead(vector<PostProcess> *pp, shared_ptr<Messy::MessSock::StagedRead_t> sr) {
+		virtual PipePacket * RemakeForRead(vector<PostProcess> *pp, const Messy::MessSock::StagedRead_t &sr) {
 			/* Check for completed packets */
 			shared_ptr<deque<string> > inP;
 
 			string data;
-			while (GetPacket(*in, sr->in, &data)) {
+			while (GetPacket(*in, sr.in, &data)) {
 				inP->push_back(move(data));
 				data = string();
 			}
