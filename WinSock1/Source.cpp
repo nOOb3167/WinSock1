@@ -641,7 +641,7 @@ namespace S2 {
 			closesocket(sock);
 		}
 
-		vector<PollFdType> Accept2()
+		vector<PollFdType> Accept2() const
 		{
 			vector<PollFdType> ret;
 
@@ -726,17 +726,17 @@ namespace Messy {
 
 		ConTokenGen tokenGen;
 		map<ConToken, CtData, ConTokenLess> cons;
-		vector<pollfd> pfds;
+		mutable vector<pollfd> pfds;
 
 		uint32_t numCons;
 
-		void RebuildPoll() {
+		void RebuildPoll() const {
 			pfds.resize(cons.size());
 			size_t idx = 0;
 			for (auto &i : cons) PollFdType::ExtractInto(i.second.pfd, &pfds.data()[idx++]);
 		}
 
-		void ReadyForPoll() {
+		void ReadyForPoll() const {
 			for (size_t i = 0; i < pfds.size(); i++) {
 				pfds[i].events = POLLIN | POLLOUT;
 				pfds[i].revents = 0;
@@ -780,7 +780,7 @@ namespace Messy {
 			numCons += cons.size();
 		}
 
-		vector<ConToken> GetConTokens() {
+		vector<ConToken> GetConTokens() const {
 			vector<ConToken> ret;
 			for (auto &i : cons) ret.push_back(i.first);
 			return ret;
@@ -795,7 +795,7 @@ namespace Messy {
 			Staged_t() : r(make_shared<vector<StagedRead_t> >()), d(make_shared<vector<StagedDisc_t> >()) {}
 		};
 
-		Staged_t StagedRead() {
+		Staged_t StagedRead() const {
 			Staged_t ret;
 
 			if (!numCons) return ret;
@@ -806,9 +806,8 @@ namespace Messy {
 			if (r == SOCKET_ERROR) throw NetFailureExc();
 			if (r > 0) {
 				size_t idx = 0;
-				auto it = cons.begin();
-				for (; it != cons.end(); it++, idx++) {
-					if (!(pfds[idx].revents & (POLLIN | POLLOUT))) continue;
+				for (auto it = cons.begin(); it != cons.end(); it++) {
+					if (!(pfds[idx++].revents & (POLLIN | POLLOUT))) continue;
 
 					deque<Fragment> w;
 
@@ -897,7 +896,7 @@ namespace S3 {
 		}
 
 		pair<bool, uint32_t> GetSize(const deque<Fragment> &extra) {
-			struct { char c[PACKET_PART_SIZE_LEN]; uint32_t u; } d;
+			union { char c[PACKET_PART_SIZE_LEN]; uint32_t u; } d;
 
 			size_t remaining = sizeof d.c;
 			string data;
@@ -959,13 +958,13 @@ int main()
 	WinsockWrap ww;
 
 	{
-		auto pl = make_shared<S::PrimitiveListening>();
+		const auto pl = make_shared<S::PrimitiveListening>();
 		auto m = make_shared<M::MessSock>();
 
 		for (;;) {
 			vector<S::PollFdType> svec = pl->Accept2();
 			m->AcceptedConsMulti(svec);
-			auto sg = m->StagedRead();
+			const auto sg = m->StagedRead();
 			if (sg.d->size()) LOG(INFO) << "sgdisc " << (*sg.d)[0].graceful << " tok " << (*sg.d)[0].tok.id;
 
 			string s; for (auto &i : m->GetConTokens()) s+=Uint32ToString(i.id); LOG(INFO) << s;
