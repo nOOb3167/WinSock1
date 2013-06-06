@@ -28,6 +28,9 @@ using namespace std;
 
 string Uint32ToString(uint32_t x) { std::stringstream ss; ss << x; std::string str; ss >> str; return str; }
 
+/* template<typename T> void PtrCond(T *p, T v) { if (p) *p = v; } */
+#define PTR_COND(p,v) do { auto _f_ = (p); if (_f_) { *_f_ = (v); } } while(0)
+
 /////////////////////////////////////////////
 #if 0
 
@@ -879,41 +882,88 @@ namespace S3 {
 		}
 	};
 
+	struct PostProcessPackWrite : PostProcess {
+		shared_ptr<deque<string> > dest;
+		shared_ptr<deque<string>> src;
+		PostProcessPackWrite(shared_ptr<deque<string> > dest, shared_ptr<deque<string> > src) : dest(dest), src(src) {}
+		virtual void Process() const { for (auto &i : *src) dest->push_back(i); }
+	};
+
+	static void GetN(const deque<Fragment> &que, string *accum, size_t *remaining) {
+		for (size_t i = 0; i < que.size() && *remaining > 0; i++) {
+			size_t have = que[i].data.length();
+			size_t getting = have < *remaining ? have : *remaining;
+			accum->append(que[i].data.substr(0, getting));
+			*remaining -= getting;
+		}
+	}
+
+	static void GetNTwin(const deque<Fragment> &in, const deque<Fragment> &extra, string *accum, size_t *remaining) {
+		GetN(in, accum, remaining);
+		if (remaining) GetN(extra, accum, remaining);
+	}
+
+	static bool GetSize(const deque<Fragment> &in, const deque<Fragment> &extra, uint32_t *out) {
+		union { char c[PACKET_PART_SIZE_LEN]; uint32_t u; } d;
+
+		size_t remaining = sizeof d.c;
+		string data;
+
+		GetNTwin(in, extra, &data, &remaining);
+
+		if (remaining) {
+			PTR_COND(out, (uint32_t)0);
+			return false;
+		} else {
+			memcpy(d.c, data.data(), sizeof d.c);
+			PTR_COND(out, (uint32_t)ntohl(d.u));
+			return true;
+		}
+	}
+
+	static bool GetPacket(const deque<Fragment> &in, const deque<Fragment> &extra, string *out) {
+		uint32_t sz;
+		string data;
+
+		if (!GetSize(in, extra, &sz)) {
+			PTR_COND(out, string());
+			return false;
+		} else {
+			GetNTwin(in, extra, &data, &sz);
+			PTR_COND(out, data.substr(PACKET_PART_SIZE_LEN, string::npos));
+			return true;
+		}
+	}
+
 	class PipePacket : public PipeR {
 	public:
 		shared_ptr<deque<Fragment> > in;
 		shared_ptr<deque<Fragment> > out;
 
-		PipePacket() : in(make_shared<deque<Fragment> >()), out(make_shared<deque<Fragment> >()) {}
+		shared_ptr<deque<string> > inPack;
 
-		void GetN(const deque<Fragment> &que, string *accum, size_t *remaining) {
-			for (size_t i = 0; i < in->size() && *remaining > 0; i++) {
-				size_t have = (*in)[i].data.length();
-				size_t getting = have < *remaining ? have : *remaining;
-				accum->append((*in)[i].data.substr(0, getting));
-				*remaining -= getting;
-			}
-		}
-
-		pair<bool, uint32_t> GetSize(const deque<Fragment> &extra) {
-			union { char c[PACKET_PART_SIZE_LEN]; uint32_t u; } d;
-
-			size_t remaining = sizeof d.c;
-			string data;
-
-			GetN(*in, &data, &remaining);
-			if (remaining) GetN(extra, &data, &remaining);
-
-			if (remaining) { return make_pair(false, 0); }
-			else { memcpy(d.c, data.data(), sizeof d.c); return make_pair(true, ntohl(d.u)); }
-		}
+		PipePacket() :
+			in(make_shared<deque<Fragment> >()),
+			out(make_shared<deque<Fragment> >()),
+			inPack(make_shared<deque<string> >()) {}
 
 		virtual PipePacket * RemakeForRead(vector<PostProcess> *pp, shared_ptr<Messy::MessSock::StagedRead_t> sr) {
-			/* Check for completed packet */
+			/* Check for completed packets */
+			shared_ptr<deque<string> > inP;
+
+			string data;
+			while (GetPacket(*in, sr->in, &data)) {
+				inP->push_back(move(data));
+				data = string();
+			}
 
 			/* FIXME: CopyConstructed, AliasPointer on sr */
 			PipePacket *ret = new PipePacket(*this);
-			pp->push_back(PostProcessFragmentWrite(in, sr));
+
+			pp->push_back(PostProcessFragmentWrite(ret->in, sr));
+			pp->push_back(PostProcessPackWrite(ret->inPack, inP));
+
+			return ret;
 		}
 	};
 
