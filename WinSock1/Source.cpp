@@ -860,6 +860,7 @@ namespace S3 {
 	class PipeR;
 
 	class PipeI {
+	public:
 		virtual PipeR * RemakeForRead(vector<PostProcess> *pp, const Messy::MessSock::StagedRead_t &sr) = 0;
 	};
 
@@ -930,8 +931,13 @@ namespace S3 {
 			return false;
 		} else {
 			GetNTwin(in, extra, &data, &sz);
-			PTR_COND(out, data.substr(PACKET_PART_SIZE_LEN, string::npos));
-			return true;
+			if (sz) {
+				PTR_COND(out, string());
+				return false;
+			} else {
+				PTR_COND(out, data.substr(PACKET_PART_SIZE_LEN, string::npos));
+				return true;
+			}
 		}
 	}
 
@@ -949,7 +955,7 @@ namespace S3 {
 
 		virtual PipePacket * RemakeForRead(vector<PostProcess> *pp, const Messy::MessSock::StagedRead_t &sr) {
 			/* Check for completed packets */
-			shared_ptr<deque<string> > inP;
+			shared_ptr<deque<string> > inP = make_shared<deque<string> >();
 
 			string data;
 			while (GetPacket(*in, sr.in, &data)) {
@@ -979,14 +985,14 @@ namespace S3 {
 
 	class PipeMaker {
 	public:
-		static shared_ptr<Pipe> MakePacket(shared_ptr<PrimitiveBase> pb, shared_ptr<ManagedBase> mgd) {
-			auto p = shared_ptr<Pipe>();
-			auto r = PipeMaker::MakePacketR(pb, mgd);
+		static shared_ptr<Pipe> MakePacket() {
+			auto p = make_shared<Pipe>();
+			auto r = PipeMaker::MakePacketR();
 			p->pr = r;
 			return p;
 		}
 
-		static shared_ptr<PipePacket> MakePacketR(shared_ptr<PrimitiveBase> pb, shared_ptr<ManagedBase> mgd) {
+		static shared_ptr<PipePacket> MakePacketR() {
 			shared_ptr<PipePacket> pl = make_shared<PipePacket>();
 			pl->pt = PipeType::Packet;
 			return pl;
@@ -1012,12 +1018,22 @@ int main()
 		auto m = make_shared<M::MessSock>();
 
 		for (;;) {
+			static shared_ptr<S3::Pipe> pp = nullptr;
+
 			vector<S::PollFdType> svec = pl->Accept2();
 			m->AcceptedConsMulti(svec);
 			const auto sg = m->StagedRead();
-			if (sg.d->size()) LOG(INFO) << "sgdisc " << (*sg.d)[0].graceful << " tok " << (*sg.d)[0].tok.id;
 
-			string s; for (auto &i : m->GetConTokens()) s+=Uint32ToString(i.id); LOG(INFO) << s;
+			if (m->GetConTokens().size()) { if (!pp) pp = S3::PipeMaker::MakePacket(); }
+			if (sg.r->size() && pp) {
+				vector<S3::PostProcess> pc;
+				pp->pr->RemakeForRead(&pc, (*sg.r)[0]);
+			}
+
+			//if (sg.d->size()) LOG(INFO) << "sgdisc " << (*sg.d)[0].graceful << " tok " << (*sg.d)[0].tok.id;
+
+			//string s; for (auto &i : m->GetConTokens()) s+=Uint32ToString(i.id); LOG(INFO) << s;
+
 		}
 	}
 
