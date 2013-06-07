@@ -930,8 +930,9 @@ namespace S3 {
 			PTR_COND(out, string());
 			return false;
 		} else {
-			GetNTwin(in, extra, &data, &sz);
-			if (sz) {
+			uint32_t szPlusHdr = sz + PACKET_PART_SIZE_LEN;
+			GetNTwin(in, extra, &data, &szPlusHdr);
+			if (&szPlusHdr) {
 				PTR_COND(out, string());
 				return false;
 			} else {
