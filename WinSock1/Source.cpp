@@ -23,6 +23,7 @@
 #define MEHTHROW(s) (::std::runtime_error((s ## " " ## __FILE__ ## " ") + ::std::to_string(__LINE__)))
 
 #define MAGIC_READ_SIZE 1024
+#define PACKET_PART_SIZE_LEN 4
 
 using namespace std;
 
@@ -842,10 +843,104 @@ namespace Messy {
 };
 
 namespace S3 {
-
 	using namespace S2;
 
-#define PACKET_PART_SIZE_LEN 4
+	namespace PackLenDel {
+		static void GetN(const deque<Fragment> &que, string *accum, size_t *remaining) {
+			for (size_t i = 0; i < que.size() && *remaining > 0; i++) {
+				size_t have = que[i].data.length();
+				size_t getting = have < *remaining ? have : *remaining;
+				accum->append(que[i].data.substr(0, getting));
+				*remaining -= getting;
+			}
+		}
+
+		static void GetNTwin(const deque<Fragment> &in, const deque<Fragment> &extra, string *accum, size_t *remaining) {
+			GetN(in, accum, remaining);
+			if (remaining) GetN(extra, accum, remaining);
+		}
+
+		static bool GetSize(const deque<Fragment> &in, const deque<Fragment> &extra, uint32_t *out) {
+			union { char c[PACKET_PART_SIZE_LEN]; uint32_t u; } d;
+
+			size_t remaining = sizeof d.c;
+			string data;
+
+			GetNTwin(in, extra, &data, &remaining);
+
+			if (remaining) {
+				PTR_COND(out, (uint32_t)0);
+				return false;
+			} else {
+				memcpy(d.c, data.data(), sizeof d.c);
+				PTR_COND(out, (uint32_t)ntohl(d.u));
+				return true;
+			}
+		}
+
+		static bool GetPacket(const deque<Fragment> &in, const deque<Fragment> &extra, string *out) {
+			uint32_t sz;
+			string data;
+
+			if (!GetSize(in, extra, &sz)) {
+				PTR_COND(out, string());
+				return false;
+			} else {
+				uint32_t szPlusHdr = sz + PACKET_PART_SIZE_LEN;
+				GetNTwin(in, extra, &data, &szPlusHdr);
+				if (&szPlusHdr) {
+					PTR_COND(out, string());
+					return false;
+				} else {
+					PTR_COND(out, data.substr(PACKET_PART_SIZE_LEN, string::npos));
+					return true;
+				}
+			}
+		}
+	};
+
+	namespace PackNlDel {
+		static bool AuxFromOne(const deque<Fragment> &in, string *accum) {
+			for (auto &i : in) {
+				if (!i.data.find('\n', 0)) {
+					accum->append(i.data);
+					continue;
+				} else {
+					size_t pos = i.data.find('\n', 0);
+					if (pos >= 1 && i.data[pos - 1] == '\r')
+						accum->append(i.data.substr(0, pos - 1));
+					else
+						accum->append(i.data.substr(0, pos));
+					return true;
+				}
+			}
+
+			return false;
+		}
+
+		static bool GetPacket(const deque<Fragment> &in, const deque<Fragment> &extra, string *out) {
+			bool ok;
+			string data;
+
+			ok = AuxFromOne(in, &data);
+			if (!ok)
+				ok = AuxFromOne(extra, &data);
+			if (!ok) {
+				PTR_COND(out, string());
+				return false;
+			} else {
+				PTR_COND(out, move(data));
+				return true;
+			}
+		}
+	};
+};
+
+namespace S3 {
+
+	using namespace S2;
+	//using namespace PackLenDel;
+	using namespace PackNlDel;
 
 	enum class PipeType {
 		Packet
@@ -890,58 +985,6 @@ namespace S3 {
 		virtual void Process() const { for (auto &i : *src) dest->push_back(i); }
 	};
 
-	static void GetN(const deque<Fragment> &que, string *accum, size_t *remaining) {
-		for (size_t i = 0; i < que.size() && *remaining > 0; i++) {
-			size_t have = que[i].data.length();
-			size_t getting = have < *remaining ? have : *remaining;
-			accum->append(que[i].data.substr(0, getting));
-			*remaining -= getting;
-		}
-	}
-
-	static void GetNTwin(const deque<Fragment> &in, const deque<Fragment> &extra, string *accum, size_t *remaining) {
-		GetN(in, accum, remaining);
-		if (remaining) GetN(extra, accum, remaining);
-	}
-
-	static bool GetSize(const deque<Fragment> &in, const deque<Fragment> &extra, uint32_t *out) {
-		union { char c[PACKET_PART_SIZE_LEN]; uint32_t u; } d;
-
-		size_t remaining = sizeof d.c;
-		string data;
-
-		GetNTwin(in, extra, &data, &remaining);
-
-		if (remaining) {
-			PTR_COND(out, (uint32_t)0);
-			return false;
-		} else {
-			memcpy(d.c, data.data(), sizeof d.c);
-			PTR_COND(out, (uint32_t)ntohl(d.u));
-			return true;
-		}
-	}
-
-	static bool GetPacket(const deque<Fragment> &in, const deque<Fragment> &extra, string *out) {
-		uint32_t sz;
-		string data;
-
-		if (!GetSize(in, extra, &sz)) {
-			PTR_COND(out, string());
-			return false;
-		} else {
-			uint32_t szPlusHdr = sz + PACKET_PART_SIZE_LEN;
-			GetNTwin(in, extra, &data, &szPlusHdr);
-			if (&szPlusHdr) {
-				PTR_COND(out, string());
-				return false;
-			} else {
-				PTR_COND(out, data.substr(PACKET_PART_SIZE_LEN, string::npos));
-				return true;
-			}
-		}
-	}
-
 	class PipePacket : public PipeR {
 	public:
 		shared_ptr<deque<Fragment> > in;
@@ -957,6 +1000,8 @@ namespace S3 {
 		virtual PipePacket * RemakeForRead(vector<PostProcess> *pp, const Messy::MessSock::StagedRead_t &sr) {
 			/* Check for completed packets */
 			shared_ptr<deque<string> > inP = make_shared<deque<string> >();
+
+			//Problem: Packet data not removed from queues
 
 			string data;
 			while (GetPacket(*in, sr.in, &data)) {
