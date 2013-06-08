@@ -31,6 +31,8 @@ string Uint32ToString(uint32_t x) { std::stringstream ss; ss << x; std::string s
 
 /* template<typename T> void PtrCond(T *p, T v) { if (p) *p = v; } */
 #define PTR_COND(p,v) do { auto _f_ = (p); if (_f_) { *_f_ = (v); } } while(0)
+#define ZZMAX(a,b) (((a) > (b)) ? (a) : (b))
+#define ZZMIN(a,b) (((a) < (b)) ? (a) : (b))
 
 /////////////////////////////////////////////
 #if 0
@@ -857,6 +859,42 @@ namespace S3 {
 		PackContR(size_t fragNo, size_t partNo, bool inIn) : fragNo(fragNo), partNo(partNo), inIn(inIn) {}
 	};
 
+	struct PackContIt : public ::std::iterator<::std::input_iterator_tag, Fragment> {
+		const deque<Fragment> &fst, &snd;
+		PackContR cont;
+		mutable int canary, canary_limit; /* FIXME: Cheese */
+		/* NOTE: 'cont(0, 0, bool(fst.size()))' skips an empty 'fst' */
+		PackContIt(const deque<Fragment> &fst, const deque<Fragment> &snd) : fst(fst), snd(snd), cont(0, 0, bool(fst.size())), canary(0), canary_limit(1000) {}
+		void AdvancePart(size_t w) {
+			const deque<Fragment> &curr = cont.inIn ? fst : snd;
+			cont.partNo += w;
+			cont.partNo = ZZMIN(w, curr[cont.fragNo].data.size());
+		}
+		void AdvanceToPart(size_t w) {
+			const deque<Fragment> &curr = cont.inIn ? fst : snd;
+			cont.partNo = ZZMIN(w, curr[cont.fragNo].data.size());
+		}
+		void AdvanceFrag() {
+			const deque<Fragment> &curr = cont.inIn ? fst : snd;
+			if (cont.fragNo == curr.size() && cont.inIn) cont = PackContR(0, 0, false);
+			else cont.fragNo++;
+		}
+		const string & CurFragData() const {
+			const deque<Fragment> &curr = cont.inIn ? fst : snd;
+			return curr.at(cont.fragNo).data;
+		}
+		size_t CurPart() const { return cont.partNo; }
+		bool EndFragP() const {
+			if (canary++ > canary_limit) assert(0);
+			const deque<Fragment> &curr = cont.inIn ? fst : snd;
+			return !cont.inIn && cont.fragNo == curr.size();
+		}
+		bool SameFragP(const PackContIt &rhs) const {
+			if (canary++ > canary_limit) assert(0);
+			return cont.inIn == rhs.cont.inIn && cont.fragNo == rhs.cont.fragNo;
+		}
+	};
+
 	namespace PackLenDel {
 		static void GetN(const deque<Fragment> &que, string *accum, size_t *remaining) {
 			for (size_t i = 0; i < que.size() && *remaining > 0; i++) {
@@ -911,6 +949,48 @@ namespace S3 {
 		}
 	};
 
+	namespace PackNlDelEx {
+
+		static bool ReadyPacketPos(PackContIt *pos) {
+			for (; !pos->EndFragP(); pos->AdvanceFrag()) {
+				auto y = pos->CurPart();
+				auto &x = pos->CurFragData();
+				size_t posn = pos->CurFragData().find('\n', pos->CurPart());
+				/* size_t posr = pos->CurFragData().find('\r', pos->CurPart()); */
+				/* size_t msgEndPos = posn > 0 && posn-1 == posr ? posr : posn; */
+
+				if (posn == string::npos) {
+					continue;
+				} else {
+					pos->AdvanceToPart(posn);
+					return true;
+				}
+			}
+
+			return false;
+		}
+
+		static void GetFromTo(const PackContIt &from, const PackContIt &to, string *accum) {
+			PackContIt it = from;
+
+			for (; !it.SameFragP(to); it.AdvanceFrag())
+					accum->append(it.CurFragData());
+
+			if (!it.EndFragP())
+				accum->append(it.CurFragData().substr(0, to.CurPart()));
+			}
+		}
+
+		static bool GetPacket(PackContIt *pos, string *out) {
+			PackContIt start = *pos;
+
+			if (!PackNlDelEx::ReadyPacketPos(pos))
+				return false;
+
+			PackNlDelEx::GetFromTo(start, *pos, out);
+			return true;
+	};
+
 	namespace PackNlDel {
 		static bool AuxFromQueue(const deque<Fragment> &in, string *accum, PackCont *cont) {
 			for (size_t i = cont->fragNo; i < in.size(); i++) {
@@ -924,7 +1004,7 @@ namespace S3 {
 					size_t pos = dat.find('\n', cont->partNo);
 					size_t msgEndPos = (pos > cont->partNo && dat[pos - 1] == '\r') ? pos-- : pos;
 					accum->append(dat.substr(cont->partNo, msgEndPos));
-					cont->partNo = pos;
+					cont->partNo = pos + 1; /* FIXME: Probably want the +1 (Leave pointing to first after match, or OOB(Onepast)) */
 					return true;
 				}
 			}
@@ -967,7 +1047,8 @@ namespace S3 {
 
 	using namespace S2;
 	//using namespace PackLenDel;
-	using namespace PackNlDel;
+	//using namespace PackNlDel;
+	using namespace PackNlDelEx;
 
 	enum class PipeType {
 		Packet
@@ -1028,11 +1109,10 @@ namespace S3 {
 			/* Check for completed packets */
 			shared_ptr<deque<string> > inP = make_shared<deque<string> >();
 
-			string data;
-			PackCont c(0, 0);
-			PackContR r;
 			//Problem: Packet data not removed from queues STILL
-			while (GetPacket(*in, sr.in, c, &data, &r)) {
+			string data;
+			PackContIt cont(*in, sr.in);
+			while (GetPacket(&cont, &data)) {
 				inP->push_back(move(data));
 				data = string();
 			}
