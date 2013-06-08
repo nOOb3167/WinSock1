@@ -845,6 +845,18 @@ namespace Messy {
 namespace S3 {
 	using namespace S2;
 
+	struct PackCont {
+		size_t fragNo; size_t partNo;
+		PackCont() : fragNo(0), partNo(0) {}
+		PackCont(size_t fragNo, size_t partNo) : fragNo(fragNo), partNo(partNo) {}
+	};
+
+	struct PackContR {
+		size_t fragNo; size_t partNo; bool inIn;
+		PackContR() : fragNo(0), partNo(0), inIn(true) {}
+		PackContR(size_t fragNo, size_t partNo, bool inIn) : fragNo(fragNo), partNo(partNo), inIn(inIn) {}
+	};
+
 	namespace PackLenDel {
 		static void GetN(const deque<Fragment> &que, string *accum, size_t *remaining) {
 			for (size_t i = 0; i < que.size() && *remaining > 0; i++) {
@@ -900,17 +912,19 @@ namespace S3 {
 	};
 
 	namespace PackNlDel {
-		static bool AuxFromOne(const deque<Fragment> &in, string *accum) {
-			for (auto &i : in) {
-				if (!i.data.find('\n', 0)) {
-					accum->append(i.data);
+		static bool AuxFromQueue(const deque<Fragment> &in, string *accum, PackCont *cont) {
+			for (size_t i = cont->fragNo; i < in.size(); i++) {
+				const string &dat = in[i].data;
+
+				if (!dat.find('\n', cont->partNo)) {
+					accum->append(dat.substr(cont->partNo, string::npos));
+					cont->fragNo++;
 					continue;
 				} else {
-					size_t pos = i.data.find('\n', 0);
-					if (pos >= 1 && i.data[pos - 1] == '\r')
-						accum->append(i.data.substr(0, pos - 1));
-					else
-						accum->append(i.data.substr(0, pos));
+					size_t pos = dat.find('\n', cont->partNo);
+					size_t msgEndPos = (pos > cont->partNo && dat[pos - 1] == '\r') ? pos-- : pos;
+					accum->append(dat.substr(cont->partNo, msgEndPos));
+					cont->partNo = pos;
 					return true;
 				}
 			}
@@ -918,19 +932,32 @@ namespace S3 {
 			return false;
 		}
 
-		static bool GetPacket(const deque<Fragment> &in, const deque<Fragment> &extra, string *out) {
-			bool ok;
+		static bool GetPacket(const deque<Fragment> &in, const deque<Fragment> &extra, const PackCont &cont, string *out, PackContR *contOut) {
+			bool ok1 = false, ok2 = false;
 			string data;
 
-			ok = AuxFromOne(in, &data);
-			if (!ok)
-				ok = AuxFromOne(extra, &data);
-			if (!ok) {
-				PTR_COND(out, string());
-				return false;
-			} else {
+			PackCont c;
+
+			{
+				c = cont;
+				ok1 = AuxFromQueue(in, &data, &c);
+			}
+
+			if (!ok1) {
+				c = PackCont(0, 0);
+				ok2 = AuxFromQueue(extra, &data, &c);
+			}
+
+			if (ok1 || ok2) {
+				/* A query succeeded. 'inIn' if first succeeded. */
 				PTR_COND(out, move(data));
+				PTR_COND(contOut, PackContR(c.fragNo, c.partNo, ok1));
 				return true;
+			} else {
+				/* Both queries failed. Currently in extra (inIn = false). */
+				PTR_COND(out, string());
+				PTR_COND(contOut, PackContR(c.fragNo, c.partNo, false));
+				return false;
 			}
 		}
 	};
@@ -1001,10 +1028,11 @@ namespace S3 {
 			/* Check for completed packets */
 			shared_ptr<deque<string> > inP = make_shared<deque<string> >();
 
-			//Problem: Packet data not removed from queues
-
 			string data;
-			while (GetPacket(*in, sr.in, &data)) {
+			PackCont c(0, 0);
+			PackContR r;
+			//Problem: Packet data not removed from queues STILL
+			while (GetPacket(*in, sr.in, c, &data, &r)) {
 				inP->push_back(move(data));
 				data = string();
 			}
