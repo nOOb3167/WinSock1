@@ -312,12 +312,53 @@ namespace S2 {
 		return 0xBBAACCFF;
 	}
 
+	struct PackCont {
+		size_t fragNo; size_t partNo;
+		PackCont() : fragNo(0), partNo(0) {}
+		PackCont(size_t fragNo, size_t partNo) : fragNo(fragNo), partNo(partNo) {}
+	};
+
+	struct PackContR {
+		size_t fragNo; size_t partNo; bool inIn;
+		PackContR() : fragNo(0), partNo(0), inIn(true) {}
+		PackContR(size_t fragNo, size_t partNo, bool inIn) : fragNo(fragNo), partNo(partNo), inIn(inIn) {}
+	};
+
 	class Fragment {
 	public:
 		Stamp stamp;
 		string data;
 		Fragment(const Stamp &s, const string &d) : stamp(s), data(d) {}
 	};
+
+	string SplitFragPrefix(const Fragment &frag, size_t partNo) {
+		return frag.data.substr(0, partNo);
+	}
+
+	string SplitFragSuffix(const Fragment &frag, size_t partNo) {
+		return frag.data.substr(partNo, string::npos);
+	}
+
+	void ErasePrefixTo(deque<Fragment> *deq, const PackCont &pc) {
+		/* Erase [0, fragNo) */
+		deq->erase(deq->begin(), deq->begin() + pc.fragNo);
+		/* Split a partial */
+		if (pc.partNo != 0) {
+			Fragment f(deq->at(pc.fragNo).stamp, move(SplitFragSuffix(deq->at(pc.fragNo), pc.partNo)));
+			deq->pop_front();
+			deq->push_front(move(f)); /* FIXME: Redundant if f.data is empty? */
+		}
+	}
+
+	void CopySuffixFrom(const deque<Fragment> &deq, const PackCont &pc, deque<Fragment> *out) {
+		if (deq.size() == pc.fragNo) return;
+
+		/* Copy first frag with correct splitting */
+		out->push_back(Fragment(deq.at(pc.fragNo).stamp, move(SplitFragSuffix(deq.at(pc.fragNo), pc.partNo))));
+
+		/* Copy remaining fully */
+		copy(deq.begin() + (pc.fragNo + 1), deq.end(), back_inserter(*out));
+	}
 
 	class PollFdType {
 	public:
@@ -847,46 +888,39 @@ namespace Messy {
 namespace S3 {
 	using namespace S2;
 
-	struct PackCont {
-		size_t fragNo; size_t partNo;
-		PackCont() : fragNo(0), partNo(0) {}
-		PackCont(size_t fragNo, size_t partNo) : fragNo(fragNo), partNo(partNo) {}
-	};
-
-	struct PackContR {
-		size_t fragNo; size_t partNo; bool inIn;
-		PackContR() : fragNo(0), partNo(0), inIn(true) {}
-		PackContR(size_t fragNo, size_t partNo, bool inIn) : fragNo(fragNo), partNo(partNo), inIn(inIn) {}
-	};
-
 	struct PackContIt : public ::std::iterator<::std::input_iterator_tag, Fragment> {
-		const deque<Fragment> &fst, &snd;
+		/* Should be CopyConstructible, Assignable */
+		const deque<Fragment> *fst, *snd;
 		PackContR cont;
 		mutable int canary, canary_limit; /* FIXME: Cheese */
 		/* NOTE: 'cont(0, 0, bool(fst.size()))' skips an empty 'fst' */
-		PackContIt(const deque<Fragment> &fst, const deque<Fragment> &snd) : fst(fst), snd(snd), cont(0, 0, bool(fst.size())), canary(0), canary_limit(1000) {}
-		void AdvancePart(size_t w) {
-			const deque<Fragment> &curr = cont.inIn ? fst : snd;
-			cont.partNo += w;
-			cont.partNo = ZZMIN(w, curr[cont.fragNo].data.size());
+		PackContIt(const deque<Fragment> &fst, const deque<Fragment> &snd) : fst(&fst), snd(&snd), cont(0, 0, bool(fst.size())), canary(0), canary_limit(1000) {}
+		void AdvancePart() {
+			const deque<Fragment> &curr = cont.inIn ? *fst : *snd;
+			if ((++cont.partNo) >= CurFragData().size())
+				AdvanceFrag();
 		}
 		void AdvanceToPart(size_t w) {
-			const deque<Fragment> &curr = cont.inIn ? fst : snd;
-			cont.partNo = ZZMIN(w, curr[cont.fragNo].data.size());
+			const deque<Fragment> &curr = cont.inIn ? *fst : *snd;
+			cont.partNo = ZZMIN(w, cont.fragNo >= curr.size() ? 0 : curr[cont.fragNo].data.size());
 		}
 		void AdvanceFrag() {
-			const deque<Fragment> &curr = cont.inIn ? fst : snd;
+			const deque<Fragment> &curr = cont.inIn ? *fst : *snd;
+			if (cont.fragNo > curr.size()) assert(0);
+
 			if (cont.fragNo == curr.size() && cont.inIn) cont = PackContR(0, 0, false);
-			else cont.fragNo++;
+			else                                         cont.fragNo++;
+
+			AdvanceToPart(0);
 		}
 		const string & CurFragData() const {
-			const deque<Fragment> &curr = cont.inIn ? fst : snd;
+			const deque<Fragment> &curr = cont.inIn ? *fst : *snd;
 			return curr.at(cont.fragNo).data;
 		}
 		size_t CurPart() const { return cont.partNo; }
 		bool EndFragP() const {
 			if (canary++ > canary_limit) assert(0);
-			const deque<Fragment> &curr = cont.inIn ? fst : snd;
+			const deque<Fragment> &curr = cont.inIn ? *fst : *snd;
 			return !cont.inIn && cont.fragNo == curr.size();
 		}
 		bool SameFragP(const PackContIt &rhs) const {
@@ -951,18 +985,20 @@ namespace S3 {
 
 	namespace PackNlDelEx {
 
-		static bool ReadyPacketPos(PackContIt *pos) {
-			for (; !pos->EndFragP(); pos->AdvanceFrag()) {
-				auto y = pos->CurPart();
-				auto &x = pos->CurFragData();
-				size_t posn = pos->CurFragData().find('\n', pos->CurPart());
-				/* size_t posr = pos->CurFragData().find('\r', pos->CurPart()); */
+		static bool ReadyPacketPos(PackContIt *fpos) {
+			/* Update iterator only on success */
+			PackContIt pos(*fpos);
+
+			for (; !pos.EndFragP(); pos.AdvanceFrag()) {
+				size_t posn = pos.CurFragData().find('\n', pos.CurPart());
+				/* size_t posr = pos.CurFragData().find('\r', pos.CurPart()); */
 				/* size_t msgEndPos = posn > 0 && posn-1 == posr ? posr : posn; */
 
-				if (posn == string::npos) {
-					continue;
-				} else {
-					pos->AdvanceToPart(posn);
+				if (posn != string::npos) {
+					pos.AdvanceToPart(posn);
+					pos.AdvancePart();
+
+					*fpos = pos;
 					return true;
 				}
 			}
@@ -973,8 +1009,9 @@ namespace S3 {
 		static void GetFromTo(const PackContIt &from, const PackContIt &to, string *accum) {
 			PackContIt it = from;
 
+			/* it.CurPart() is from.CurPart() the first time, and 0 (From it.AdvanceFrag()) afterwards */
 			for (; !it.SameFragP(to); it.AdvanceFrag())
-					accum->append(it.CurFragData());
+					accum->append(it.CurFragData().substr(it.CurPart(), string::npos));
 
 			if (!it.EndFragP())
 				accum->append(it.CurFragData().substr(0, to.CurPart()));
@@ -1086,9 +1123,25 @@ namespace S3 {
 		}
 	};
 
+	struct PostProcessCullPrefixAndMerge : PostProcess {
+		const PackContR cont;
+		shared_ptr<deque<Fragment> > in;
+		const deque<Fragment> &extra;
+		PostProcessCullPrefixAndMerge(shared_ptr<deque<Fragment> > in, const deque<Fragment> &extra, const PackContR cont) : in(in), extra(extra), cont(cont) {}
+		virtual void Process() const {
+			if (cont.inIn) {
+				ErasePrefixTo(&(*in), PackCont(cont.fragNo, cont.partNo));
+				CopySuffixFrom(extra, PackCont(0, 0), &(*in));
+			} else {
+				in->clear();
+				CopySuffixFrom(extra, PackCont(cont.fragNo, cont.partNo), &(*in));
+			}
+		}
+	};
+
 	struct PostProcessPackWrite : PostProcess {
 		shared_ptr<deque<string> > dest;
-		shared_ptr<deque<string>> src;
+		shared_ptr<deque<string> > src;
 		PostProcessPackWrite(shared_ptr<deque<string> > dest, shared_ptr<deque<string> > src) : dest(dest), src(src) {}
 		virtual void Process() const { for (auto &i : *src) dest->push_back(i); }
 	};
@@ -1106,21 +1159,23 @@ namespace S3 {
 			inPack(make_shared<deque<string> >()) {}
 
 		virtual PipePacket * RemakeForRead(vector<PostProcess> *pp, const Messy::MessSock::StagedRead_t &sr) {
-			/* Check for completed packets */
 			shared_ptr<deque<string> > inP = make_shared<deque<string> >();
 
-			//Problem: Packet data not removed from queues STILL
-			string data;
+			/* Check for completed packets, leave iterator past last completed packet */
 			PackContIt cont(*in, sr.in);
+
+			string data;
 			while (GetPacket(&cont, &data)) {
 				inP->push_back(move(data));
 				data = string();
 			}
 
-			/* FIXME: CopyConstructed, AliasPointer on sr */
+			const PackContR finalCont = cont.cont;
+
+			/* FIXME: CopyConstructed */
 			PipePacket *ret = new PipePacket(*this);
 
-			pp->push_back(PostProcessFragmentWrite(ret->in, sr));
+			pp->push_back(PostProcessCullPrefixAndMerge(ret->in, sr.in, finalCont));
 			pp->push_back(PostProcessPackWrite(ret->inPack, inP));
 
 			return ret;
