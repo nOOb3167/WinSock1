@@ -302,6 +302,15 @@ namespace S2 {
 	class NetFailureExc : NetExc {};
 	class NetDisconnectExc : NetFailureExc {};
 	class NetBlockExc : NetExc {};
+	class NetFailureErrExc : NetFailureExc {
+	public:
+		int e;
+		mutable string s;
+		NetFailureErrExc() { e = WSAGetLastError(); }
+		virtual const char * what() const {
+			switch (e) { case WSAEINVAL: return "WSAEINVAL"; case WSAEWOULDBLOCK: return "WSAEWOULDBLOCK"; case WSAEINTR: return "WSAEINTR"; case WSAEINPROGRESS: return "WSAEINPROGRESS"; default: return (s = string("WS32ERR ").append(Uint32ToString((uint32_t)e))).c_str(); };
+		};
+	};
 
 	bool ErrorWouldBlock() {
 		int e = WSAGetLastError();
@@ -378,7 +387,7 @@ namespace S2 {
 
 					w->push_back(Fragment(EmptyStamp(), string(buf, r)));
 
-					LOG(INFO) << "Read " << string(buf, r);
+					LOG(INFO) << "Raw Read " << string(buf, r);
 			}
 		}
 	};
@@ -843,14 +852,20 @@ namespace Messy {
 		};
 
 		Staged_t StagedRead() const {
+			/**
+			* FIXME: If disconnects are not processed, 'numCons' will not match real.
+			*        I suspect a WSAPoll with all sockets dead is invalid.
+			*        (See conditions for a WSAEINVAL return on MSDN)
+			*/
 			Staged_t ret;
 
 			if (!numCons) return ret;
 
 			ReadyForPoll();
 
-			int r = WSAPoll(pfds.data(), numCons, 0);
-			if (r == SOCKET_ERROR) throw NetFailureExc();
+			int r = WSAPoll(pfds.data(), pfds.size(), 0);
+			if (r == SOCKET_ERROR) 
+				throw NetFailureErrExc();
 			if (r > 0) {
 				size_t idx = 0;
 				for (auto it = cons.begin(); it != cons.end(); it++) {
@@ -1101,7 +1116,7 @@ namespace S3 {
 
 	class PipeI {
 	public:
-		virtual PipeR * RemakeForRead(vector<PostProcess> *pp, const Messy::MessSock::StagedRead_t &sr) = 0;
+		virtual PipeR * RemakeForRead(vector<shared_ptr<PostProcess> > *pp, const Messy::MessSock::StagedRead_t &sr) = 0;
 	};
 
 	class PipeR : public PipeI {
@@ -1158,7 +1173,7 @@ namespace S3 {
 			out(make_shared<deque<Fragment> >()),
 			inPack(make_shared<deque<string> >()) {}
 
-		virtual PipePacket * RemakeForRead(vector<PostProcess> *pp, const Messy::MessSock::StagedRead_t &sr) {
+		virtual PipePacket * RemakeForRead(vector<shared_ptr<PostProcess> > *pp, const Messy::MessSock::StagedRead_t &sr) {
 			shared_ptr<deque<string> > inP = make_shared<deque<string> >();
 
 			/* Check for completed packets, leave iterator past last completed packet */
@@ -1175,8 +1190,8 @@ namespace S3 {
 			/* FIXME: CopyConstructed */
 			PipePacket *ret = new PipePacket(*this);
 
-			pp->push_back(PostProcessCullPrefixAndMerge(ret->in, sr.in, finalCont));
-			pp->push_back(PostProcessPackWrite(ret->inPack, inP));
+			pp->push_back(make_shared<PostProcessCullPrefixAndMerge>(ret->in, sr.in, finalCont));
+			pp->push_back(make_shared<PostProcessPackWrite>(ret->inPack, inP));
 
 			return ret;
 		}
@@ -1210,15 +1225,9 @@ namespace S3 {
 
 };
 
-int main()
-{
+int main2() {
 	namespace S = S2;
 	namespace M = Messy;
-
-	FLAGS_logtostderr = 1;
-	google::InitGoogleLogging("WinSock1");
-
-	LOG(INFO) << "Hello";
 
 	WinsockWrap ww;
 
@@ -1235,14 +1244,17 @@ int main()
 
 			if (m->GetConTokens().size()) { if (!pp) pp = S3::PipeMaker::MakePacket(); }
 			if (sg.r->size() && pp) {
-				vector<S3::PostProcess> pc;
+				vector<shared_ptr<S3::PostProcess> > pc;
 				pp->pr->RemakeForRead(&pc, (*sg.r)[0]);
+				for (auto &i : pc) (*i)();
+				S3::PipePacket *p3p = dynamic_cast<S3::PipePacket *>(&*(pp->pr));
+				LOG(INFO) << "PackRead " << p3p->inPack->size();
+				for (auto &i : *p3p->inPack) LOG(INFO) << "  " << i.c_str();
 			}
 
 			//if (sg.d->size()) LOG(INFO) << "sgdisc " << (*sg.d)[0].graceful << " tok " << (*sg.d)[0].tok.id;
 
 			//string s; for (auto &i : m->GetConTokens()) s+=Uint32ToString(i.id); LOG(INFO) << s;
-
 		}
 	}
 
@@ -1267,4 +1279,18 @@ int main()
 	}
 
 	return EXIT_SUCCESS;
+}
+
+int main() {
+	FLAGS_logtostderr = 1;
+	google::InitGoogleLogging("WinSock1");
+
+	LOG(INFO) << "Hello";
+
+	try {
+		return main2();
+	} catch (S2::NetFailureErrExc &e) {
+		LOG(INFO) << "Exception " << e.what();
+		throw;
+	}
 }
