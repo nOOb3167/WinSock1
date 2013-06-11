@@ -13,19 +13,9 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
-#define MEHTHROW(s) (::std::runtime_error((s ## " " ## __FILE__ ## " ") + ::std::to_string(__LINE__)))
-
-#define MAGIC_READ_SIZE 1024
-#define PACKET_PART_SIZE_LEN 4
-
-/* template<typename T> void PtrCond(T *p, T v) { if (p) *p = v; } */
-#define PTR_COND(p,v) do { auto _f_ = (p); if (_f_) { *_f_ = (v); } } while(0)
-#define ZZMAX(a,b) (((a) > (b)) ? (a) : (b))
-#define ZZMIN(a,b) (((a) < (b)) ? (a) : (b))
-
-using namespace std;
-
 namespace NetData {
+	using namespace std;
+
 	class NetExc : ::std::exception {};
 	class NetFailureExc : NetExc {};
 	class NetDisconnectExc : NetFailureExc {};
@@ -79,6 +69,7 @@ namespace NetData {
 /* No Win* Nix*, Just ifdef the whole thing, only have interfaces. */
 /* NetNat and PollFdType allowed to use system-stuff. */
 namespace NetNative {
+	using namespace std;
 
 	class NetFailureErrExc : NetData::NetFailureExc {
 	private:
@@ -139,6 +130,8 @@ namespace NetNative {
 };
 
 namespace NetStuff {
+	using namespace std;
+
 	using namespace NetData;
 	using namespace NetNative;
 
