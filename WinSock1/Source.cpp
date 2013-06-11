@@ -19,6 +19,7 @@
 #include <ws2tcpip.h>
 
 #pragma comment(lib, "Ws2_32.lib")
+#pragma warning(once : 4101 4800)
 
 #define MEHTHROW(s) (::std::runtime_error((s ## " " ## __FILE__ ## " ") + ::std::to_string(__LINE__)))
 
@@ -792,6 +793,11 @@ namespace Messy {
 			for (auto &i : cons) PollFdType::ExtractInto(i.second.pfd, &pfds.data()[idx++]);
 		}
 
+		void UpdateCons() {
+			numCons = cons.size();
+			RebuildPoll();
+		};
+
 		void ReadyForPoll() const {
 			for (size_t i = 0; i < pfds.size(); i++) {
 				pfds[i].events = POLLIN | POLLOUT;
@@ -830,10 +836,10 @@ namespace Messy {
 				AddConsMulti(pfds, newToks, newCts);
 			} catch (exception &e) {
 				for (auto &i : newToks) tokenGen.ReturnToken(i);
+				throw;
 			}
 
-			RebuildPoll();
-			numCons += cons.size();
+			UpdateCons();
 		}
 
 		vector<ConToken> GetConTokens() const {
@@ -861,6 +867,7 @@ namespace Messy {
 
 			if (!numCons) return ret;
 
+			RebuildPoll(); /* FIXME: Redundant RebuildPoll just to be sure. Call RebuildPoll only on changes to cons.. */
 			ReadyForPoll();
 
 			int r = WSAPoll(pfds.data(), pfds.size(), 0);
