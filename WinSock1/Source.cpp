@@ -1245,6 +1245,8 @@ int main2() {
 		map<M::ConToken, shared_ptr<S3::Pipe>, M::ConTokenLess> pipes;
 
 		for (;;) {
+			Sleep(500);
+
 			static shared_ptr<S3::Pipe> pp = nullptr;
 
 			vector<S::PollFdType> svec = pl->Accept2();
