@@ -15,10 +15,22 @@
 
 #include <NetStuff.h>
 
+namespace NetNative {
+	NetFuncs GNetNat;
+};
+
 namespace NetData {
 	Stamp EmptyStamp() {
 		return 0xBBAACCFF;
 	};
+
+	string Uint32ToString(uint32_t x) {
+		std::stringstream ss;
+		ss << x;
+		std::string str;
+		ss >> str;
+		return str;
+	}
 
 	Fragment::Fragment(const Stamp &stamp, const string &data) : stamp(stamp), data(data) {}
 
@@ -62,10 +74,12 @@ namespace NetData {
 namespace NetNative {
 	NetFailureErrExc::NetFailureErrExc() { e = WSAGetLastError(); }
 	const char * NetFailureErrExc::what() const {
-		switch (e) { case WSAEINVAL: return "WSAEINVAL"; case WSAEWOULDBLOCK: return "WSAEWOULDBLOCK"; case WSAEINTR: return "WSAEINTR"; case WSAEINPROGRESS: return "WSAEINPROGRESS"; default: return (s = string("WS32ERR ").append(Uint32ToString((uint32_t)e))).c_str(); };
+		switch (e) { case WSAEINVAL: return "WSAEINVAL"; case WSAEWOULDBLOCK: return "WSAEWOULDBLOCK"; case WSAEINTR: return "WSAEINTR"; case WSAEINPROGRESS: return "WSAEINPROGRESS"; default: return (s = string("WS32ERR ").append(NetData::Uint32ToString((uint32_t)e))).c_str(); };
 	};
 
-	PrimitiveListening::PrimitiveListening() {
+	PollFdType::PollFdType(SOCKET s) : s(s) {}
+
+	PrimitiveListening::PrimitiveListening() : pfd(GNetNat.MakePollFdType(INVALID_SOCKET)) {
 		struct addrinfo *res = nullptr;
 		struct addrinfo hints = {0};
 		hints.ai_family = AF_INET;
@@ -259,6 +273,10 @@ namespace NetStuff {
 			accum->append(it.CurFragData().substr(0, to.CurPart()));
 	}
 
+	MessSock::Staged_t::Staged_t() : r(make_shared<vector<StagedRead_t> >()), d(make_shared<vector<StagedDisc_t> >()) {}
+
+	MessSock::CtData::CtData(PollFdType pfd) : pfd(pfd), in(), out(), knownClosed(false) {}
+
 	vector<PollFdType> MessSock::GetPollFds() {
 		vector<PollFdType> curCons;
 		for (auto &i : cons) curCons.push_back(i.second.pfd);
@@ -313,7 +331,7 @@ namespace NetStuff {
 	}
 
 	MessSock::Staged_t MessSock::StagedRead() {
-		Staged_t ret;
+		MessSock::Staged_t ret;
 
 		if (!numCons) return ret;
 
@@ -350,6 +368,52 @@ namespace NetStuff {
 		return ret;
 	};
 
+	namespace PackNlDelEx {
+
+		static bool ReadyPacketPos(PackContIt *fpos) {
+			/* Update iterator only on success */
+			PackContIt pos(*fpos);
+
+			for (; !pos.EndFragP(); pos.AdvanceFrag()) {
+				size_t posn = pos.CurFragData().find('\n', pos.CurPart());
+				/* size_t posr = pos.CurFragData().find('\r', pos.CurPart()); */
+				/* size_t msgEndPos = posn > 0 && posn-1 == posr ? posr : posn; */
+
+				if (posn != string::npos) {
+					pos.AdvanceToPart(posn);
+					pos.AdvancePart();
+
+					*fpos = pos;
+					return true;
+				}
+			}
+
+			return false;
+		}
+
+		static void GetFromTo(const PackContIt &from, const PackContIt &to, string *accum) {
+			PackContIt it = from;
+
+			/* it.CurPart() is from.CurPart() the first time, and 0 (From it.AdvanceFrag()) afterwards */
+			for (; !it.SameFragP(to); it.AdvanceFrag())
+				accum->append(it.CurFragData().substr(it.CurPart(), string::npos));
+
+			if (!it.EndFragP())
+				accum->append(it.CurFragData().substr(0, to.CurPart()));
+		}
+
+		static bool GetPacket(PackContIt *pos, string *out) {
+			PackContIt start = *pos;
+
+			if (!PackNlDelEx::ReadyPacketPos(pos))
+				return false;
+
+			PackNlDelEx::GetFromTo(start, *pos, out);
+			return true;
+		}
+
+	};
+
 	void PostProcess::Process() {
 		LOG(ERROR) << "Empty PostProcess step";
 		throw exception("Empty PostProcess step");
@@ -361,7 +425,7 @@ namespace NetStuff {
 		for (auto &i : sr->in) deq->push_back(i);
 	}
 
-	PostProcessCullPrefixAndMerge::PostProcessCullPrefixAndMerge(shared_ptr<deque<Fragment> > in, const deque<Fragment> &extra, const PackContR cont) : in(in), extra(extra), cont(cont) {}
+	PostProcessCullPrefixAndMerge::PostProcessCullPrefixAndMerge(shared_ptr<deque<Fragment> > in, const deque<Fragment> &extra, const PackContR cont) : in(in), extra(&extra), cont(cont) {}
 	void PostProcessCullPrefixAndMerge::Process() const {
 		if (cont.inIn) {
 			NetData::Fragment::ErasePrefixTo(&(*in), PackCont(cont.fragNo, cont.partNo));

@@ -35,19 +35,7 @@ namespace NetData {
 
 	Stamp EmptyStamp();
 
-	class Fragment {
-	public:
-		Stamp stamp;
-		string data;
-
-		Fragment(const Stamp &s, const string &d);
-
-		string SplitFragPrefix(size_t partNo) const;
-		string SplitFragSuffix(size_t partNo) const;
-
-		static void ErasePrefixTo(deque<Fragment> *deq, const PackCont &pc);
-		static void CopySuffixFrom(const deque<Fragment> &deq, const PackCont &pc, deque<Fragment> *out);
-	};
+	string Uint32ToString(uint32_t x);
 
 	struct PackCont {
 		size_t fragNo;
@@ -64,6 +52,20 @@ namespace NetData {
 
 		PackContR();
 		PackContR(size_t fragNo, size_t partNo, bool inIn);
+	};
+
+	class Fragment {
+	public:
+		Stamp stamp;
+		string data;
+
+		Fragment(const Stamp &s, const string &d);
+
+		string SplitFragPrefix(size_t partNo) const;
+		string SplitFragSuffix(size_t partNo) const;
+
+		static void ErasePrefixTo(deque<Fragment> *deq, const PackCont &pc);
+		static void CopySuffixFrom(const deque<Fragment> &deq, const PackCont &pc, deque<Fragment> *out);
 	};
 
 	/* FIXME: Is this even used? */
@@ -134,7 +136,6 @@ namespace NetNative {
 		vector<bool> PerformPoll();
 	};
 
-	NetFuncs GNetNat;
 };
 
 namespace NetStuff {
@@ -169,7 +170,7 @@ namespace NetStuff {
 	};
 
 	class ConTokenGen {
-		size_t maxTokens;
+		int maxTokens;
 		set<ConToken, ConTokenLess> toks;
 	public:
 		ConTokenGen();
@@ -215,7 +216,7 @@ namespace NetStuff {
 			deque<Fragment> in;
 			deque<Fragment> out;
 			bool knownClosed;
-			CtData(PollFdType pfd) : pfd(pfd), in(), out(), knownClosed(false) {}
+			CtData(PollFdType pfd);
 		};
 
 		ConTokenGen tokenGen;
