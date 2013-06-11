@@ -1242,26 +1242,46 @@ int main2() {
 		const auto pl = make_shared<S::PrimitiveListening>();
 		auto m = make_shared<M::MessSock>();
 
+		map<M::ConToken, shared_ptr<S3::Pipe>, M::ConTokenLess> pipes;
+
 		for (;;) {
 			static shared_ptr<S3::Pipe> pp = nullptr;
 
 			vector<S::PollFdType> svec = pl->Accept2();
 			m->AcceptedConsMulti(svec);
-			const auto sg = m->StagedRead();
 
-			if (m->GetConTokens().size()) { if (!pp) pp = S3::PipeMaker::MakePacket(); }
-			if (sg.r->size() && pp) {
-				vector<shared_ptr<S3::PostProcess> > pc;
-				pp->pr->RemakeForRead(&pc, (*sg.r)[0]);
-				for (auto &i : pc) (*i)();
-				S3::PipePacket *p3p = dynamic_cast<S3::PipePacket *>(&*(pp->pr));
-				LOG(INFO) << "PackRead " << p3p->inPack->size();
-				for (auto &i : *p3p->inPack) LOG(INFO) << "  " << i.c_str();
+			{
+				set<M::ConToken, M::ConTokenLess> ptoks, mtoks;
+				for (auto &i : pipes) ptoks.insert(i.first);
+				for (auto &i : m->GetConTokens()) mtoks.insert(i);
+
+				vector<M::ConToken> toCreate;
+				set_difference(mtoks.begin(), mtoks.end(), ptoks.begin(), ptoks.end(), back_inserter(toCreate), M::ConTokenLess());
+
+				for (auto &i : toCreate) assert(pipes.find(i) == pipes.end());
+				for (auto &i : toCreate) pipes[i] = S3::PipeMaker::MakePacket();
+				for (auto &i : toCreate) LOG(INFO) << "Creating " << i.id << " " << m->GetConTokens().size();
 			}
 
-			//if (sg.d->size()) LOG(INFO) << "sgdisc " << (*sg.d)[0].graceful << " tok " << (*sg.d)[0].tok.id;
+			const auto sg = m->StagedRead();
 
-			//string s; for (auto &i : m->GetConTokens()) s+=Uint32ToString(i.id); LOG(INFO) << s;
+			{
+				vector<shared_ptr<S3::PostProcess> > pc;
+
+				for (auto &i : *sg.r) {
+					if (pipes.find(i.tok) == pipes.end()) { LOG(ERROR) << "Read of inexistant " << i.tok.id; continue; }
+					pipes[i.tok]->pr->RemakeForRead(&pc, i);
+				}
+
+				for (auto &i : pc) i->Process();
+
+				for (auto &i : pipes) {
+					S3::PipePacket *p3p = dynamic_cast<S3::PipePacket *>(&*(i.second->pr));
+					if (!p3p->inPack->size()) continue;
+					LOG(INFO) << "PackRead " << i.first.id << " : " << p3p->inPack->size();
+					for (auto &i : *p3p->inPack) LOG(INFO) << "  " << i.c_str();
+				}
+			}
 		}
 	}
 
