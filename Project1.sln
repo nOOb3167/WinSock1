@@ -7,6 +7,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "WinSock1", "WinSock1\WinSoc
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "NetStuff", "NetStuff\NetStuff.vcxproj", "{0CFF9DEF-44E3-4364-8BAC-0567B511BFB6}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "NetStuffTest", "NetStuffTest\NetStuffTest.vcxproj", "{F6BA4046-B6B8-4322-934A-CFA222F03545}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Win32 = Debug|Win32
@@ -25,6 +27,10 @@ Global
 		{0CFF9DEF-44E3-4364-8BAC-0567B511BFB6}.Debug|Win32.Build.0 = Debug|Win32
 		{0CFF9DEF-44E3-4364-8BAC-0567B511BFB6}.Release|Win32.ActiveCfg = Release|Win32
 		{0CFF9DEF-44E3-4364-8BAC-0567B511BFB6}.Release|Win32.Build.0 = Release|Win32
+		{F6BA4046-B6B8-4322-934A-CFA222F03545}.Debug|Win32.ActiveCfg = Debug|Win32
+		{F6BA4046-B6B8-4322-934A-CFA222F03545}.Debug|Win32.Build.0 = Debug|Win32
+		{F6BA4046-B6B8-4322-934A-CFA222F03545}.Release|Win32.ActiveCfg = Release|Win32
+		{F6BA4046-B6B8-4322-934A-CFA222F03545}.Release|Win32.Build.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

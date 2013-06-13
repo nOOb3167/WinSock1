@@ -1075,8 +1075,7 @@ int main2() {
 }
 
 int main() {
-	FLAGS_logtostderr = 1;
-	google::InitGoogleLogging("WinSock1");
+    LogincInit();
 
 	LOG(INFO) << "Hello";
 
