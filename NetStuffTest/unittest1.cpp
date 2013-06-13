@@ -1,15 +1,19 @@
 #include "stdafx.h"
 #include "CppUnitTest.h"
 
-#include <Lib1/Header.h>
+#include <memory>
 #include <NetStuff/NetStuff.h>
+
+using namespace std;
 
 using namespace Microsoft::VisualStudio::CppUnitTestFramework;
 
-namespace UnitTest1
-{		
+namespace UnitTest1 {
+
+    shared_ptr<WinsockWrap> ww;
+
     TEST_MODULE_INITIALIZE(Hello1) {
-        1 == 1;
+        ww = make_shared<WinsockWrap>();
     };
 
     TEST_CLASS(UnitTest1)
@@ -18,10 +22,7 @@ namespace UnitTest1
 
         TEST_METHOD(TestMethod1)
         {
-            Lib1 a;
-            NetData::PackCont b;
-            Assert::IsTrue(a.Hello(10) == 110);
-            // TODO: Your test code here
+            Assert::IsTrue(1 == 1);
         }
 
     };
