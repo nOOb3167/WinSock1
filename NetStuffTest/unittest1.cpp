@@ -1,16 +1,27 @@
 #include "stdafx.h"
 #include "CppUnitTest.h"
 
-using namespace Microsoft::VisualStudio::CppUnitTestFramework;
+#include <memory>
+#include <stdexcept>
 
-namespace NetStuffTest
-{		
-	TEST_CLASS(UnitTest1)
-	{
+#include <NetStuff/NetStuff.h>
+
+using namespace Microsoft::VisualStudio::CppUnitTestFramework;
+using namespace std;
+
+namespace NetStuffTest {
+
+    //shared_ptr<WinsockWrap> ww;
+
+    TEST_MODULE_INITIALIZE(ModInit) {
+        //NetData::PackCont z = NetData::PackCont(0, 123);
+        NetData::PackCont z;
+    }
+
+	TEST_CLASS(UnitTest1) {
 	public:
 		
-		TEST_METHOD(TestMethod1)
-		{
+		TEST_METHOD(TestMethod1) {
 			Assert::AreEqual(1, 1);
 		}
 

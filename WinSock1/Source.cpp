@@ -37,26 +37,6 @@ using namespace std;
 
 string Uint32ToString(uint32_t x) { std::stringstream ss; ss << x; std::string str; ss >> str; return str; }
 
-class WinsockWrap
-{
-	WSADATA wsd;
-public:
-	WinsockWrap() {
-		int r = 0;
-		try {
-			if (r = WSAStartup(MAKEWORD(2, 2), &wsd) || LOBYTE(wsd.wVersion) != 2 || HIBYTE(wsd.wVersion) != 2)
-				throw exception("Initializing Winsock2");
-		} catch (exception &) {
-			if (!r) WSACleanup();
-			throw;
-		}
-	}
-
-	~WinsockWrap() {
-		WSACleanup();
-	}
-};
-
 namespace S2 {
 
 	typedef uint32_t Stamp;

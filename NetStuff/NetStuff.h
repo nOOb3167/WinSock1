@@ -13,6 +13,13 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
+class WinsockWrap {
+	WSADATA wsd;
+public:
+    WinsockWrap();
+	~WinsockWrap();
+};
+
 namespace NetData {
 	using namespace std;
 

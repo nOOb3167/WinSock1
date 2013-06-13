@@ -32,6 +32,18 @@
 
 using namespace std;
 
+WinsockWrap::WinsockWrap() {
+    int r = WSAStartup(MAKEWORD(2, 2), &wsd);
+    unsigned int l = LOBYTE(wsd.wVersion);
+    unsigned int h = HIBYTE(wsd.wVersion);
+    if (r) WSACleanup();
+    if (l != 2 || h != 2) assert(0);
+}
+
+WinsockWrap::~WinsockWrap() {
+		WSACleanup();
+}
+
 namespace NetNative {
 	NetFuncs GNetNat;
 };
