@@ -9,6 +9,11 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "NetStuff", "NetStuff\NetStu
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "NetStuffTest", "NetStuffTest\UnitTest1.vcxproj", "{D01E1CB4-9457-42ED-943F-F36C4FD8078B}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{F87494BA-0876-4A10-8041-C9353CBCE9E5}"
+	ProjectSection(SolutionItems) = preProject
+		TestSettings.testsettings = TestSettings.testsettings
+	EndProjectSection
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Win32 = Debug|Win32
