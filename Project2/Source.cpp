@@ -66,8 +66,8 @@ GLubyte * CreateImageBufRGB(const char *fname, int *w, int *h) {
 	assert(r);
 
 	/* Only interested in Width and Height, now prime the structure for the 2nd GetDIBits call.
-	   http://msdn.microsoft.com/en-us/library/windows/desktop/dd183376%28v=vs.85%29.aspx
-	       Says if biBitCount = 32 && biCompression = BI_RGB then bmiColors will be empty. */
+	http://msdn.microsoft.com/en-us/library/windows/desktop/dd183376%28v=vs.85%29.aspx
+	Says if biBitCount = 32 && biCompression = BI_RGB then bmiColors will be empty. */
 	tmpW = bInfo.bmiHeader.biWidth;
 	tmpH = bInfo.bmiHeader.biHeight;
 
@@ -114,24 +114,22 @@ oglplus::Texture CreateTexture(const char *fname) {
 	return tex;
 }
 
-class Ex1 {
-public:
+struct Ex1 {
 	aiScene *scene;
-
 	oglplus::Texture tex;
-
-	Ex1() {
-		scene = const_cast<aiScene *>(aiImportFile("C:\\Users\\Andrej\\Documents\\BlendTmp\\mCube01.dae", aiProcessPreset_TargetRealtime_MaxQuality));
-		assert(scene);
-
-		tex = CreateTexture("C:\\Users\\Andrej\\Documents\\BlendTmp\\bTest01.bmp");
-	}
-
-	void Display() {
-	}
 };
 
 static Ex1 *gEx = nullptr;
+
+static void Init(Ex1 &d) {
+	d.scene = const_cast<aiScene *>(aiImportFile("C:\\Users\\Andrej\\Documents\\BlendTmp\\mCube01.dae", aiProcessPreset_TargetRealtime_MaxQuality));
+	assert(d.scene);
+
+	d.tex = CreateTexture("C:\\Users\\Andrej\\Documents\\BlendTmp\\bTest01.bmp");
+}
+
+static void Display(Ex1 &d) {
+}
 
 void display(void) {
 	oglplus::Context gl;
@@ -139,7 +137,7 @@ void display(void) {
 	gl.Clear().ColorBuffer().DepthBuffer();
 
 	assert(gEx);
-	gEx->Display();
+	Display(*gEx);
 
 	glutSwapBuffers();
 }
@@ -148,8 +146,8 @@ int main(int argc, char **argv) {
 
 	glutInit(&argc, argv);
 	glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA | GLUT_DEPTH);
-    glutInitWindowSize(800, 600);
-    glutInitWindowPosition(100, 100);
+	glutInitWindowSize(800, 600);
+	glutInitWindowPosition(100, 100);
 	glutInitContextVersion (3,3);
 	glutInitContextProfile (GLUT_CORE_PROFILE);
 	glewExperimental=TRUE;
@@ -158,6 +156,7 @@ int main(int argc, char **argv) {
 	glGetError();
 
 	gEx = new Ex1();
+	Init(*gEx);
 
 	glutDisplayFunc(display);
 	glutMainLoop();
