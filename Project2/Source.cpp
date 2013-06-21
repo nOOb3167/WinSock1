@@ -122,7 +122,11 @@ oglplus::Texture CreateTexture(const char *fname) {
 	return tex;
 }
 
-struct Ex1 {
+struct ExBase {
+	virtual void Display() = 0;
+};
+
+struct Ex1 : public ExBase {
 	Context gl;
 
 	aiScene *scene;
@@ -137,111 +141,98 @@ struct Ex1 {
 	VertexArray vaCube;
 	Buffer vtCube, uvCube;
 
-	Ex1() : projM(prog, "ProjectionMatrix"), camM(prog, "CameraMatrix"), mdlM(prog, "ModelMatrix") {}
+	Ex1() :
+		projM(prog, "ProjectionMatrix"), 
+		camM(prog, "CameraMatrix"), 
+		mdlM(prog, "ModelMatrix")
+	{
+		scene = const_cast<aiScene *>(aiImportFile("C:\\Users\\Andrej\\Documents\\BlendTmp\\mCube01.dae", aiProcessPreset_TargetRealtime_MaxQuality));
+		assert(scene);
+
+		tex = CreateTexture("C:\\Users\\Andrej\\Documents\\BlendTmp\\bTest01.bmp");
+
+		vs.Source(
+			"#version 420\n\
+			uniform mat4 ProjectionMatrix, CameraMatrix, ModelMatrix;\
+			in vec4 Position;\
+			in vec2 TexCoord;\
+			out vec2 vTexCoord;\
+			void main(void) {\
+			vTexCoord = TexCoord;\
+			gl_Position = ProjectionMatrix * CameraMatrix * ModelMatrix * Position;\
+			}"
+			);
+		vs.Compile();
+
+		fs.Source(
+			"#version 420\n\
+			layout(binding = 0) uniform sampler2D TexUnit;\
+			in vec2 vTexCoord;\
+			out vec4 fragColor;\
+			void main(void) {\
+			vec4 t = texture(TexUnit, vTexCoord);\
+			fragColor = vec4(1.0, t.gb, 1.0);\
+			}"
+			);
+		fs.Compile();
+
+		prog.AttachShader(vs);
+		prog.AttachShader(fs);
+		prog.Link();
+		prog.Use();
+
+		vaCube.Bind();
+
+		vtCube.Bind(oglplus::BufferOps::Target::Array);
+		{
+			GLfloat v[] = { 0, 0, 0, 1, 0, 0, 1, 1, 0 };
+			Buffer::Data(oglplus::BufferOps::Target::Array, v);
+			(prog|"Position").Setup(3, oglplus::DataType::Float).Enable();
+		}
+
+		uvCube.Bind(oglplus::BufferOps::Target::Array);
+		{
+			GLfloat v[] = { 0, 0, 1, 0, 1, 1 };
+			Buffer::Data(oglplus::BufferOps::Target::Array, v);
+			(prog|"TexCoord").Setup(2, oglplus::DataType::Float).Enable();
+		}
+
+		tex.Active(0);
+		tex.Bind(oglplus::TextureOps::Target::_2D);
+
+		vaCube.Unbind();	
+	}
+
+	void Display() {
+		projM.Set(CamMatrixf::PerspectiveX(Degrees(90), GLfloat(G_WIN_W)/G_WIN_H, 1, 30));
+		camM.Set(ModelMatrixf().TranslationZ(-2.0));
+		mdlM.Set(CamMatrixf());
+
+		vaCube.Bind();
+
+		tex.Active(0);
+		tex.Bind(oglplus::TextureOps::Target::_2D);
+
+		gl.DrawArrays(PrimitiveType::Triangles, 0, 3);
+
+		vaCube.Unbind();
+	}
 };
 
-static Ex1 *gEx = nullptr;
-
-static void Init(Ex1 &d) {
-	d.scene = const_cast<aiScene *>(aiImportFile("C:\\Users\\Andrej\\Documents\\BlendTmp\\mCube01.dae", aiProcessPreset_TargetRealtime_MaxQuality));
-	assert(d.scene);
-
-	d.tex = CreateTexture("C:\\Users\\Andrej\\Documents\\BlendTmp\\bTest01.bmp");
-
-	d.vs.Source(
-		"#version 420\n\
-		uniform mat4 ProjectionMatrix, CameraMatrix, ModelMatrix;\
-		in vec4 Position;\
-		in vec2 TexCoord;\
-		out vec2 vTexCoord;\
-		void main(void) {\
-		vTexCoord = TexCoord;\
-		gl_Position = ProjectionMatrix * CameraMatrix * ModelMatrix * Position;\
-		}"
-		);
-	d.vs.Compile();
-
-	d.fs.Source(
-		"#version 420\n\
-		layout(binding = 0) uniform sampler2D TexUnit;\
-		in vec2 vTexCoord;\
-		out vec4 fragColor;\
-		void main(void) {\
-		vec4 t = texture(TexUnit, vTexCoord);\
-		fragColor = vec4(1.0, t.gb, 1.0);\
-		}"
-		);
-	d.fs.Compile();
-
-	d.prog.AttachShader(d.vs);
-	d.prog.AttachShader(d.fs);
-	d.prog.Link();
-	d.prog.Use();
-
-	d.vaCube.Bind();
-
-	d.vtCube.Bind(oglplus::BufferOps::Target::Array);
-	{
-		GLfloat v[] = { 0, 0, 0, 1, 0, 0, 1, 1, 0 };
-		Buffer::Data(oglplus::BufferOps::Target::Array, v);
-		(d.prog|"Position").Setup(3, oglplus::DataType::Float).Enable();
-	}
-
-	d.uvCube.Bind(oglplus::BufferOps::Target::Array);
-	{
-		GLfloat v[] = { 0, 0, 1, 0, 1, 1 };
-		Buffer::Data(oglplus::BufferOps::Target::Array, v);
-		(d.prog|"TexCoord").Setup(2, oglplus::DataType::Float).Enable();
-	}
-
-	d.tex.Active(0);
-	d.tex.Bind(oglplus::TextureOps::Target::_2D);
-
-	d.vaCube.Unbind();
-}
-
-static void Display(Ex1 &d) {
-	d.projM.Set(CamMatrixf::PerspectiveX(Degrees(90), GLfloat(G_WIN_W)/G_WIN_H, 1, 30));
-	d.camM.Set(ModelMatrixf().TranslationZ(-2.0));
-	d.mdlM.Set(CamMatrixf());
-
-	d.vaCube.Bind();
-
-	d.tex.Active(0);
-	d.tex.Bind(oglplus::TextureOps::Target::_2D);
-
-	d.gl.DrawArrays(PrimitiveType::Triangles, 0, 3);
-
-	d.vaCube.Unbind();
-}
-
-void display(void) {
-	oglplus::Context gl;
-	gl.ClearColor(0.2f, 0.2f, 0.2f, 0.0f);
-	gl.Clear().ColorBuffer().DepthBuffer();
-
-	assert(gEx);
-	Display(*gEx);
-
-	glutSwapBuffers();
-}
-
-void OglGenErr(oglplus::Error &err) {
-	std::cerr <<
-		"Error (in " << err.GLSymbol() << ", " <<
-		err.ClassName() << ": '" <<
-		err.ObjectDescription() << "'): " <<
-		err.what() <<
-		" [" << err.File() << ":" << err.Line() << "] ";
-	std::cerr << std::endl;
-	err.Cleanup();
-}
-
-
-int main(int argc, char **argv) {
+template<typename ExType>
+void RunExample(int argc, char **argv) {
+	auto OglGenErr = [](oglplus::Error &err) {
+		std::cerr <<
+			"Error (in " << err.GLSymbol() << ", " <<
+			err.ClassName() << ": '" <<
+			err.ObjectDescription() << "'): " <<
+			err.what() <<
+			" [" << err.File() << ":" << err.Line() << "] ";
+		std::cerr << std::endl;
+		err.Cleanup();
+	};
 
 	try {
-
 		glutInit(&argc, argv);
 		glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA | GLUT_DEPTH);
 		glutInitWindowSize(G_WIN_W, G_WIN_H);
@@ -253,19 +244,33 @@ int main(int argc, char **argv) {
 		assert (glewInit() == GLEW_OK);
 		glGetError();
 
-		gEx = new Ex1();
-		Init(*gEx);
+		static ExBase *gEx = new ExType();
 
-		glutDisplayFunc(display);
+		auto dispfunc = []() {
+			oglplus::Context gl;
+			gl.ClearColor(0.2f, 0.2f, 0.2f, 0.0f);
+			oglplus::Context::Clear().ColorBuffer().DepthBuffer();
+
+			gEx->Display();
+
+			glutSwapBuffers();
+		};
+
+		glutDisplayFunc(dispfunc);
 		glutMainLoop();
-
 	} catch(oglplus::CompileError &e) {
 		std::cerr << e.Log();
+		OglGenErr(e);
 		throw;
 	} catch(oglplus::Error &e) {
 		OglGenErr(e);
 		throw;
 	}
+}
+
+int main(int argc, char **argv) {
+
+	RunExample<Ex1>(argc, argv);
 
 	return EXIT_SUCCESS;
 }
