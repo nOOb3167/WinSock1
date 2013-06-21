@@ -123,8 +123,18 @@ oglplus::Texture CreateTexture(const char *fname) {
 }
 
 struct ExBase {
+	virtual ~ExBase() {};
 	virtual void Display() = 0;
 };
+
+bool VecSimilar(const aiVector3D &a, const aiVector3D &b) {
+	const float delta = 0.001f;
+	if (std::fabsf(a[0] - b[0]) < delta
+		&& std::fabsf(a[1] - b[1]) < delta
+		&& std::fabsf(a[2] - b[2]) < delta)
+		return true;
+	else return false;
+}
 
 struct Ex1 : public ExBase {
 	Context gl;
@@ -219,6 +229,40 @@ struct Ex1 : public ExBase {
 	}
 };
 
+struct Ex2 : public ExBase {
+	Context gl;
+
+	aiScene *scene;
+
+	Ex2() {
+		scene = const_cast<aiScene *>(aiImportFile("C:\\Users\\Andrej\\Documents\\BlendTmp\\t01_OrientPlace.dae", 0));
+		assert(scene);
+
+		aiScene &s = *scene;
+		assert(s.mNumMeshes == 1);
+
+		aiMesh &m = *s.mMeshes[0];
+		assert(m.mPrimitiveTypes == 4 && m.mNumFaces == 1 && m.GetNumUVChannels() == 1 && m.mNumUVComponents[0] == 2 && m.mNumVertices == 3);
+		assert(VecSimilar(m.mVertices[m.mFaces[0].mIndices[0]], aiVector3D(1.0, 0.0, 0.0)));
+		assert(VecSimilar(m.mVertices[m.mFaces[0].mIndices[1]], aiVector3D(1.0, 1.0, 0.0)));
+		assert(VecSimilar(m.mVertices[m.mFaces[0].mIndices[2]], aiVector3D(0.0, 0.0, 0.0)));
+		assert(VecSimilar(m.mTextureCoords[0][m.mFaces[0].mIndices[0]], aiVector3D(1.0, 0.0, 0.0)));
+		assert(VecSimilar(m.mTextureCoords[0][m.mFaces[0].mIndices[1]], aiVector3D(1.0, 1.0, 0.0)));
+		assert(VecSimilar(m.mTextureCoords[0][m.mFaces[0].mIndices[2]], aiVector3D(0.0, 0.0, 0.0)));
+
+		aiNode &fakeRn = *s.mRootNode;
+		assert(fakeRn.mName == aiString("Scene") && fakeRn.mNumChildren == 1);
+
+		aiNode &rn = *fakeRn.mChildren[0];
+		assert(rn.mName == aiString("Cube") && rn.mNumChildren == 0);
+		assert(rn.mNumMeshes == 1);
+	}
+
+	void Display() {
+	}
+};
+
+
 template<typename ExType>
 void RunExample(int argc, char **argv) {
 	auto OglGenErr = [](oglplus::Error &err) {
@@ -270,7 +314,8 @@ void RunExample(int argc, char **argv) {
 
 int main(int argc, char **argv) {
 
-	RunExample<Ex1>(argc, argv);
+	//RunExample<Ex1>(argc, argv);
+	RunExample<Ex2>(argc, argv);
 
 	return EXIT_SUCCESS;
 }
