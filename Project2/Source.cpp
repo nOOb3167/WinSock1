@@ -226,6 +226,18 @@ void display(void) {
 	glutSwapBuffers();
 }
 
+void OglGenErr(oglplus::Error &err) {
+	std::cerr <<
+		"Error (in " << err.GLSymbol() << ", " <<
+		err.ClassName() << ": '" <<
+		err.ObjectDescription() << "'): " <<
+		err.what() <<
+		" [" << err.File() << ":" << err.Line() << "] ";
+	std::cerr << std::endl;
+	err.Cleanup();
+}
+
+
 int main(int argc, char **argv) {
 
 	try {
@@ -247,19 +259,12 @@ int main(int argc, char **argv) {
 		glutDisplayFunc(display);
 		glutMainLoop();
 
-	} catch(oglplus::Error& err) {
-
-		std::cerr <<
-			"Error (in " << err.GLSymbol() << ", " <<
-			err.ClassName() << ": '" <<
-			err.ObjectDescription() << "'): " <<
-			err.what() <<
-			" [" << err.File() << ":" << err.Line() << "] ";
-		std::cerr << std::endl;
-		err.Cleanup();
-
+	} catch(oglplus::CompileError &e) {
+		std::cerr << e.Log();
 		throw;
-
+	} catch(oglplus::Error &e) {
+		OglGenErr(e);
+		throw;
 	}
 
 	return EXIT_SUCCESS;
