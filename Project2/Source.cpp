@@ -136,6 +136,16 @@ bool VecSimilar(const aiVector3D &a, const aiVector3D &b) {
 	else return false;
 }
 
+bool MatSimilar(const aiMatrix4x4 &a, const aiMatrix4x4 &b) {
+	const float delta = 0.001f;
+	if (std::fabsf(a.a1 - b.a1) < delta && std::fabsf(a.a2 - b.a2) < delta && std::fabsf(a.a3 - b.a3) < delta && std::fabsf(a.a4 - b.a4) < delta &&
+		std::fabsf(a.b1 - b.b1) < delta && std::fabsf(a.b2 - b.b2) < delta && std::fabsf(a.b3 - b.b3) < delta && std::fabsf(a.b4 - b.b4) < delta &&
+		std::fabsf(a.c1 - b.c1) < delta && std::fabsf(a.c2 - b.c2) < delta && std::fabsf(a.c3 - b.c3) < delta && std::fabsf(a.c4 - b.c4) < delta &&
+		std::fabsf(a.d1 - b.d1) < delta && std::fabsf(a.d2 - b.d2) < delta && std::fabsf(a.d3 - b.d3) < delta && std::fabsf(a.d4 - b.d4) < delta)
+		return true;
+	else return false;
+}
+
 struct Ex1 : public ExBase {
 	Context gl;
 
@@ -256,6 +266,7 @@ struct Ex2 : public ExBase {
 		aiNode &rn = *fakeRn.mChildren[0];
 		assert(rn.mName == aiString("Cube") && rn.mNumChildren == 0);
 		assert(rn.mNumMeshes == 1);
+		assert(MatSimilar(rn.mTransformation, aiMatrix4x4(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1)));
 	}
 
 	void Display() {
