@@ -1,6 +1,7 @@
 #include <cstdlib>
 #include <cassert>
 
+#include <iostream>
 #include <memory>
 #include <vector>
 
@@ -10,6 +11,9 @@
 #include <GL/glew.h>
 #include <GL/freeglut.h>
 #include <oglplus/all.hpp>
+
+#define G_WIN_W 800
+#define G_WIN_H 800
 
 using namespace std;
 using namespace oglplus;
@@ -67,7 +71,10 @@ GLubyte * CreateImageBufRGB(const char *fname, int *w, int *h) {
 
 	/* Only interested in Width and Height, now prime the structure for the 2nd GetDIBits call.
 	http://msdn.microsoft.com/en-us/library/windows/desktop/dd183376%28v=vs.85%29.aspx
-	Says if biBitCount = 32 && biCompression = BI_RGB then bmiColors will be empty. */
+	If biBitCount = 32 && biCompression = BI_RGB then bmiColors will be empty.
+	http://msdn.microsoft.com/en-us/library/windows/desktop/dd144879%28v=vs.85%29.aspx
+	The scan lines must be aligned on a DWORD except for RLE compressed bitmaps.
+	*/
 	tmpW = bInfo.bmiHeader.biWidth;
 	tmpH = bInfo.bmiHeader.biHeight;
 
@@ -78,6 +85,7 @@ GLubyte * CreateImageBufRGB(const char *fname, int *w, int *h) {
 	bInfo.bmiHeader.biClrUsed = 0;
 	bInfo.bmiHeader.biClrImportant = 0;
 
+	/* Times 4 is always DWORD aligned. */
 	buf = new GLubyte[bInfo.bmiHeader.biWidth * bInfo.bmiHeader.biHeight * 4];
 	assert (buf);
 
@@ -115,8 +123,21 @@ oglplus::Texture CreateTexture(const char *fname) {
 }
 
 struct Ex1 {
+	Context gl;
+
 	aiScene *scene;
-	oglplus::Texture tex;
+	Texture tex;
+
+	VertexShader vs;
+	FragmentShader fs;
+	Program prog;
+
+	LazyUniform<Mat4f> projM, camM, mdlM;
+
+	VertexArray vaCube;
+	Buffer vtCube, uvCube;
+
+	Ex1() : projM(prog, "ProjectionMatrix"), camM(prog, "CameraMatrix"), mdlM(prog, "ModelMatrix") {}
 };
 
 static Ex1 *gEx = nullptr;
@@ -126,14 +147,77 @@ static void Init(Ex1 &d) {
 	assert(d.scene);
 
 	d.tex = CreateTexture("C:\\Users\\Andrej\\Documents\\BlendTmp\\bTest01.bmp");
+
+	d.vs.Source(
+		"#version 420\n\
+		uniform mat4 ProjectionMatrix, CameraMatrix, ModelMatrix;\
+		in vec4 Position;\
+		in vec2 TexCoord;\
+		out vec2 vTexCoord;\
+		void main(void) {\
+		vTexCoord = TexCoord;\
+		gl_Position = ProjectionMatrix * CameraMatrix * ModelMatrix * Position;\
+		}"
+		);
+	d.vs.Compile();
+
+	d.fs.Source(
+		"#version 420\n\
+		layout(binding = 0) uniform sampler2D TexUnit;\
+		in vec2 vTexCoord;\
+		out vec4 fragColor;\
+		void main(void) {\
+		vec4 t = texture(TexUnit, vTexCoord);\
+		fragColor = vec4(1.0, t.gb, 1.0);\
+		}"
+		);
+	d.fs.Compile();
+
+	d.prog.AttachShader(d.vs);
+	d.prog.AttachShader(d.fs);
+	d.prog.Link();
+	d.prog.Use();
+
+	d.vaCube.Bind();
+
+	d.vtCube.Bind(oglplus::BufferOps::Target::Array);
+	{
+		GLfloat v[] = { 0, 0, 0, 1, 0, 0, 1, 1, 0 };
+		Buffer::Data(oglplus::BufferOps::Target::Array, v);
+		(d.prog|"Position").Setup(3, oglplus::DataType::Float).Enable();
+	}
+
+	d.uvCube.Bind(oglplus::BufferOps::Target::Array);
+	{
+		GLfloat v[] = { 0, 0, 1, 0, 1, 1 };
+		Buffer::Data(oglplus::BufferOps::Target::Array, v);
+		(d.prog|"TexCoord").Setup(2, oglplus::DataType::Float).Enable();
+	}
+
+	d.tex.Active(0);
+	d.tex.Bind(oglplus::TextureOps::Target::_2D);
+
+	d.vaCube.Unbind();
 }
 
 static void Display(Ex1 &d) {
+	d.projM.Set(CamMatrixf::PerspectiveX(Degrees(90), GLfloat(G_WIN_W)/G_WIN_H, 1, 30));
+	d.camM.Set(ModelMatrixf().TranslationZ(-2.0));
+	d.mdlM.Set(CamMatrixf());
+
+	d.vaCube.Bind();
+
+	d.tex.Active(0);
+	d.tex.Bind(oglplus::TextureOps::Target::_2D);
+
+	d.gl.DrawArrays(PrimitiveType::Triangles, 0, 3);
+
+	d.vaCube.Unbind();
 }
 
 void display(void) {
 	oglplus::Context gl;
-	gl.ClearColor(1.0f, 0.0f, 0.0f, 0.0f);
+	gl.ClearColor(0.2f, 0.2f, 0.2f, 0.0f);
 	gl.Clear().ColorBuffer().DepthBuffer();
 
 	assert(gEx);
@@ -144,22 +228,39 @@ void display(void) {
 
 int main(int argc, char **argv) {
 
-	glutInit(&argc, argv);
-	glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA | GLUT_DEPTH);
-	glutInitWindowSize(800, 600);
-	glutInitWindowPosition(100, 100);
-	glutInitContextVersion (3,3);
-	glutInitContextProfile (GLUT_CORE_PROFILE);
-	glewExperimental=TRUE;
-	glutCreateWindow("OGLplus");
-	assert (glewInit() == GLEW_OK);
-	glGetError();
+	try {
 
-	gEx = new Ex1();
-	Init(*gEx);
+		glutInit(&argc, argv);
+		glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA | GLUT_DEPTH);
+		glutInitWindowSize(G_WIN_W, G_WIN_H);
+		glutInitWindowPosition(100, 100);
+		glutInitContextVersion (3,3);
+		glutInitContextProfile (GLUT_CORE_PROFILE);
+		glewExperimental=TRUE;
+		glutCreateWindow("OGLplus");
+		assert (glewInit() == GLEW_OK);
+		glGetError();
 
-	glutDisplayFunc(display);
-	glutMainLoop();
+		gEx = new Ex1();
+		Init(*gEx);
+
+		glutDisplayFunc(display);
+		glutMainLoop();
+
+	} catch(oglplus::Error& err) {
+
+		std::cerr <<
+			"Error (in " << err.GLSymbol() << ", " <<
+			err.ClassName() << ": '" <<
+			err.ObjectDescription() << "'): " <<
+			err.what() <<
+			" [" << err.File() << ":" << err.Line() << "] ";
+		std::cerr << std::endl;
+		err.Cleanup();
+
+		throw;
+
+	}
 
 	return EXIT_SUCCESS;
 }
