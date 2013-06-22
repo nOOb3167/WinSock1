@@ -239,6 +239,187 @@ struct Ex1 : public ExBase {
 	}
 };
 
+Program ShaderTexSimple() {
+	VertexShader vs;
+	FragmentShader fs;
+	Program prog;
+	vs.Source(
+		"#version 420\n\
+		uniform mat4 ProjectionMatrix, CameraMatrix, ModelMatrix;\
+		in vec4 Position;\
+		in vec2 TexCoord;\
+		out vec2 vTexCoord;\
+		void main(void) {\
+		vTexCoord = TexCoord;\
+		gl_Position = ProjectionMatrix * CameraMatrix * ModelMatrix * Position;\
+		}"
+		);
+	fs.Source(
+		"#version 420\n\
+		uniform sampler2D TexUnit;\
+		in vec2 vTexCoord;\
+		out vec4 fragColor;\
+		void main(void) {\
+		vec4 t = texture(TexUnit, vTexCoord);\
+		fragColor = vec4(t.rgb, 1.0);\
+		}"
+		);
+	vs.Compile();
+	fs.Compile();
+	prog.AttachShader(vs);
+	prog.AttachShader(fs);
+	prog.Link();
+	return prog;
+}
+
+struct MeshData {
+	size_t triCnt;
+
+	vector<oglplus::Vec3f> vt;
+	vector<oglplus::Vec2f> uv;
+	vector<GLuint> id;
+
+	MeshData(const vector<oglplus::Vec3f> &vt, const vector<oglplus::Vec2f> &uv, const vector<GLuint> &id) : triCnt(vt.size()), vt(vt), uv(uv), id(id) {
+		assert(vt.size() == uv.size() && vt.size() == id.size());
+	}
+};
+
+namespace Md {
+	struct TexPair {
+		Buffer uv;
+		Texture tex;
+	};
+
+	struct MdD {
+		size_t triCnt;
+
+		Buffer id;
+		Buffer vt;
+		TexPair tp;
+
+		MdD(const MeshData &md, Texture tex) {
+			triCnt = md.triCnt;
+
+			vt.Bind(oglplus::BufferOps::Target::Array);
+			{
+				vector<GLuint> v;
+				for (auto &i : md.id) {
+					v.push_back(i);
+				}
+				Buffer::Data(oglplus::BufferOps::Target::Array, v);
+			}
+
+			vt.Bind(oglplus::BufferOps::Target::Array);
+			{
+				vector<GLfloat> v;
+				for (auto &i : md.vt) {
+					v.push_back(i.x()); v.push_back(i.y()); v.push_back(i.z());
+				}
+				Buffer::Data(oglplus::BufferOps::Target::Array, v);
+			}
+
+			/* TexPair */
+
+			tp.uv.Bind(oglplus::BufferOps::Target::Array);
+			{
+				vector<GLfloat> v;
+				for (auto &i : md.uv) {
+					v.push_back(i.x()); v.push_back(i.y());
+				}
+				Buffer::Data(oglplus::BufferOps::Target::Array, v);
+			}
+
+			tp.tex = tex;
+		}
+	};
+
+	struct MdT {
+		Mat4f ProjectionMatrix;
+		Mat4f CameraMatrix;
+		Mat4f ModelMatrix;
+
+		MdT(const Mat4f &p, const Mat4f &c, const Mat4f &m) : ProjectionMatrix(p), CameraMatrix(c), ModelMatrix(m) {}
+	};
+
+	class Shd {
+		bool valid;
+	public:
+		Shd() : valid(false) {}
+		void Invalidate() { valid = false; }
+	protected:
+		void Validate() { valid = true; }
+	};
+
+	class ShdTexSimple : public Shd {
+		Program prog;
+		VertexArray va;
+
+		ShdTexSimple() : prog(ShaderTexSimple()) {}
+		void Prime(const MdD &md, const MdT &mt) {
+			/* MdD */
+
+			va.Bind();
+
+			md.id.Bind(oglplus::BufferOps::Target::ElementArray);
+
+			md.vt.Bind(oglplus::BufferOps::Target::Array);
+			(prog|"Position").Setup(3, oglplus::DataType::Float).Enable();
+
+			/* TexPair */
+
+			md.tp.uv.Bind(oglplus::BufferOps::Target::Array);
+			(prog|"TexCoord").Setup(3, oglplus::DataType::Float).Enable();
+
+			(prog/"TexUnit") = 0;
+
+			md.tp.tex.Active(0);
+			md.tp.tex.Bind(oglplus::TextureOps::Target::_2D);
+
+			/* MdT */
+
+			(prog/"ProjectionMatrix") = mt.ProjectionMatrix;
+			(prog/"CameraMatrix") = mt.CameraMatrix;
+			(prog/"ModelMatrix") = mt.ModelMatrix;
+
+			Validate();
+		}
+
+		void UnPrime() {
+			Invalidate();
+
+			va.Unbind();
+
+			Texture::Unbind(oglplus::TextureOps::Target::_2D);
+			Buffer::Unbind(oglplus::BufferOps::Target::Array);
+			Buffer::Unbind(oglplus::BufferOps::Target::ElementArray);
+		}
+	};
+}
+
+MeshData MeshExtract(const aiScene &s, const aiMesh &m) {
+	vector<oglplus::Vec3f> vt;
+	vector<oglplus::Vec2f> uv;
+	vector<GLuint> id;
+
+	for (size_t i = 0; i < m.mNumVertices; i++) {
+		aiVector3D v = m.mVertices[i];
+		vt.push_back(oglplus::Vec3f(v.x, v.y, v.z));
+	}
+
+	for (size_t i = 0; i < m.mNumVertices; i++) {
+		aiVector3D v = m.mTextureCoords[0][i];
+		uv.push_back(oglplus::Vec2f(v.x, v.y));
+	}
+
+	for (size_t i = 0; i < m.mNumFaces; i++) {
+		assert(m.mFaces[i].mNumIndices == 3);
+		for (size_t j = 0; j < 3; j++)
+			id.push_back(m.mFaces[i].mIndices[j]);
+	}
+
+	return MeshData(vt, uv, id);
+}
+
 struct Ex2 : public ExBase {
 	Context gl;
 
