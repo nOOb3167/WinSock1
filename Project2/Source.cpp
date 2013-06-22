@@ -18,6 +18,8 @@
 using namespace std;
 using namespace oglplus;
 
+class Ctx : public oglplus::Context {};
+
 class SaneStoreState {
 public:
 	GLint swapbytes, lsbfirst, rowlength, skiprows, skippixels, alignment;
@@ -147,8 +149,6 @@ bool MatSimilar(const aiMatrix4x4 &a, const aiMatrix4x4 &b) {
 }
 
 struct Ex1 : public ExBase {
-	Context gl;
-
 	aiScene *scene;
 	Texture tex;
 
@@ -226,14 +226,14 @@ struct Ex1 : public ExBase {
 	void Display() {
 		projM.Set(CamMatrixf::PerspectiveX(Degrees(90), GLfloat(G_WIN_W)/G_WIN_H, 1, 30));
 		camM.Set(ModelMatrixf().TranslationZ(-2.0));
-		mdlM.Set(CamMatrixf());
+		mdlM.Set(ModelMatrixf());
 
 		vaCube.Bind();
 
 		tex.Active(0);
 		tex.Bind(oglplus::TextureOps::Target::_2D);
 
-		gl.DrawArrays(PrimitiveType::Triangles, 0, 3);
+		Ctx::DrawArrays(PrimitiveType::Triangles, 0, 3);
 
 		vaCube.Unbind();
 	}
@@ -297,10 +297,10 @@ namespace Md {
 		Buffer vt;
 		TexPair tp;
 
-		MdD(const MeshData &md, Texture tex) {
+		MdD(const MeshData &md, const Texture &tex) {
 			triCnt = md.triCnt;
 
-			vt.Bind(oglplus::BufferOps::Target::Array);
+			id.Bind(oglplus::BufferOps::Target::Array);
 			{
 				vector<GLuint> v;
 				for (auto &i : md.id) {
@@ -346,19 +346,33 @@ namespace Md {
 	public:
 		Shd() : valid(false) {}
 		void Invalidate() { valid = false; }
+		bool IsValid() { return valid; }
 	protected:
 		void Validate() { valid = true; }
 	};
 
 	class ShdTexSimple : public Shd {
+	public:
 		Program prog;
 		VertexArray va;
 
-		ShdTexSimple() : prog(ShaderTexSimple()) {}
+		size_t triCnt;
+
+		ShdTexSimple() : prog(ShaderTexSimple()), triCnt(0) {}
 		void Prime(const MdD &md, const MdT &mt) {
 			/* MdD */
 
+			triCnt = md.triCnt;
+
 			va.Bind();
+
+			/* FIXME: Really hard to navigate source but shader_data.hpp::_call_set_t indicates
+			   its 'program' argument is unused. Implies a program needs to be already bound at call time
+			   of (prog/blah) aka Uniform<blah>(prog, blah) = blah.
+			   But apparently not for ProgramUniform (OpenGL 4.1 or ARB_separate_shader_objects)
+			   UniformSetOps        ... ActiveProgramCallOps
+			   ProgramUniformSetOps ... SpecificProgramCallOps */
+			/* prog.Use(); */
 
 			md.id.Bind(oglplus::BufferOps::Target::ElementArray);
 
@@ -368,20 +382,28 @@ namespace Md {
 			/* TexPair */
 
 			md.tp.uv.Bind(oglplus::BufferOps::Target::Array);
-			(prog|"TexCoord").Setup(3, oglplus::DataType::Float).Enable();
+			(prog|"TexCoord").Setup(2, oglplus::DataType::Float).Enable();
 
-			(prog/"TexUnit") = 0;
+			ProgramUniformSampler(prog, "TexUnit") = 0;
 
 			md.tp.tex.Active(0);
 			md.tp.tex.Bind(oglplus::TextureOps::Target::_2D);
 
 			/* MdT */
 
-			(prog/"ProjectionMatrix") = mt.ProjectionMatrix;
-			(prog/"CameraMatrix") = mt.CameraMatrix;
-			(prog/"ModelMatrix") = mt.ModelMatrix;
+			ProgramUniform<Mat4f>(prog, "ProjectionMatrix") = mt.ProjectionMatrix;
+			ProgramUniform<Mat4f>(prog, "CameraMatrix") = mt.CameraMatrix;
+			ProgramUniform<Mat4f>(prog, "ModelMatrix") = mt.ModelMatrix;
 
 			Validate();
+		}
+
+		void Draw() {
+			assert(IsValid());
+
+			prog.Use();
+			Ctx::DrawArrays(PrimitiveType::Triangles, 0, triCnt * 3);
+			prog.UseNone();
 		}
 
 		void UnPrime() {
@@ -421,9 +443,11 @@ MeshData MeshExtract(const aiScene &s, const aiMesh &m) {
 }
 
 struct Ex2 : public ExBase {
-	Context gl;
-
 	aiScene *scene;
+
+	Md::ShdTexSimple shdTs;
+	shared_ptr<Md::MdD> mdd;
+	shared_ptr<Md::MdT> mdt;
 
 	Ex2() {
 		scene = const_cast<aiScene *>(aiImportFile("C:\\Users\\Andrej\\Documents\\BlendTmp\\t01_OrientPlace.dae", 0));
@@ -448,9 +472,15 @@ struct Ex2 : public ExBase {
 		assert(rn.mName == aiString("Cube") && rn.mNumChildren == 0);
 		assert(rn.mNumMeshes == 1);
 		assert(MatSimilar(rn.mTransformation, aiMatrix4x4(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1)));
+
+		mdd = make_shared<Md::MdD>(MeshExtract(s, m), CreateTexture("C:\\Users\\Andrej\\Documents\\BlendTmp\\bTest01.bmp"));
+		mdt = make_shared<Md::MdT>(CamMatrixf::PerspectiveX(Degrees(90), GLfloat(G_WIN_W)/G_WIN_H, 1, 30), CamMatrixf::CameraMatrix(), ModelMatrixf().TranslationZ(-2.0));
 	}
 
 	void Display() {
+		shdTs.Prime(*mdd, *mdt);
+		shdTs.Draw();
+		shdTs.UnPrime();
 	}
 };
 
@@ -483,9 +513,8 @@ void RunExample(int argc, char **argv) {
 		static ExBase *gEx = new ExType();
 
 		auto dispfunc = []() {
-			oglplus::Context gl;
-			gl.ClearColor(0.2f, 0.2f, 0.2f, 0.0f);
-			oglplus::Context::Clear().ColorBuffer().DepthBuffer();
+			Ctx::ClearColor(0.2f, 0.2f, 0.2f, 0.0f);
+			Ctx::Clear().ColorBuffer().DepthBuffer();
 
 			gEx->Display();
 
