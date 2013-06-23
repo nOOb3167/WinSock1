@@ -106,20 +106,20 @@ GLubyte * CreateImageBufRGB(const char *fname, int *w, int *h) {
 	return buf;
 };
 
-oglplus::Texture CreateTexture(const char *fname) {
+oglplus::Texture * CreateTexture(const char *fname) {
 	int w, h;
 	SaneStoreState sss;
 
 	unique_ptr<GLubyte[]> buf(CreateImageBufRGB(fname, &w, &h));
 	shared_ptr<oglplus::images::Image> im = make_shared<oglplus::images::Image>(w, h, 1, 4, buf.get());
 
-	oglplus::Texture tex;
-	tex.Active(0);
-	tex.Bind(oglplus::TextureTarget::_2D);
-	tex.MinFilter(oglplus::TextureTarget::_2D, oglplus::TextureMinFilter::Nearest);
-	tex.MagFilter(oglplus::TextureTarget::_2D, oglplus::TextureMagFilter::Nearest);
-	tex.Image2D(oglplus::TextureTarget::_2D, *im);
-	tex.Unbind(oglplus::TextureTarget::_2D);
+	oglplus::Texture *tex = new oglplus::Texture();
+	tex->Active(0);
+	tex->Bind(oglplus::TextureTarget::_2D);
+	tex->MinFilter(oglplus::TextureTarget::_2D, oglplus::TextureMinFilter::Nearest);
+	tex->MagFilter(oglplus::TextureTarget::_2D, oglplus::TextureMagFilter::Nearest);
+	tex->Image2D(oglplus::TextureTarget::_2D, *im);
+	tex->Unbind(oglplus::TextureTarget::_2D);
 
 	return tex;
 }
@@ -150,7 +150,7 @@ bool MatSimilar(const aiMatrix4x4 &a, const aiMatrix4x4 &b) {
 
 struct Ex1 : public ExBase {
 	aiScene *scene;
-	Texture tex;
+	shared_ptr<Texture> tex;
 
 	VertexShader vs;
 	FragmentShader fs;
@@ -169,7 +169,7 @@ struct Ex1 : public ExBase {
 		scene = const_cast<aiScene *>(aiImportFile("C:\\Users\\Andrej\\Documents\\BlendTmp\\mCube01.dae", aiProcessPreset_TargetRealtime_MaxQuality));
 		assert(scene);
 
-		tex = CreateTexture("C:\\Users\\Andrej\\Documents\\BlendTmp\\bTest01.bmp");
+		tex = shared_ptr<Texture>(CreateTexture("C:\\Users\\Andrej\\Documents\\BlendTmp\\bTest01.bmp"));
 
 		vs.Source(
 			"#version 420\n\
@@ -217,8 +217,8 @@ struct Ex1 : public ExBase {
 			(prog|"TexCoord").Setup(2, oglplus::DataType::Float).Enable();
 		}
 
-		tex.Active(0);
-		tex.Bind(oglplus::TextureOps::Target::_2D);
+		tex->Active(0);
+		tex->Bind(oglplus::TextureOps::Target::_2D);
 
 		vaCube.Unbind();	
 	}
@@ -230,8 +230,8 @@ struct Ex1 : public ExBase {
 
 		vaCube.Bind();
 
-		tex.Active(0);
-		tex.Bind(oglplus::TextureOps::Target::_2D);
+		tex->Active(0);
+		tex->Bind(oglplus::TextureOps::Target::_2D);
 
 		Ctx::DrawArrays(PrimitiveType::Triangles, 0, 3);
 
@@ -239,10 +239,10 @@ struct Ex1 : public ExBase {
 	}
 };
 
-Program ShaderTexSimple() {
+Program * ShaderTexSimple() {
 	VertexShader vs;
 	FragmentShader fs;
-	Program prog;
+	Program *prog = new Program();
 	vs.Source(
 		"#version 420\n\
 		uniform mat4 ProjectionMatrix, CameraMatrix, ModelMatrix;\
@@ -266,9 +266,9 @@ Program ShaderTexSimple() {
 		);
 	vs.Compile();
 	fs.Compile();
-	prog.AttachShader(vs);
-	prog.AttachShader(fs);
-	prog.Link();
+	prog->AttachShader(vs);
+	prog->AttachShader(fs);
+	prog->Link();
 	return prog;
 }
 
@@ -279,28 +279,31 @@ struct MeshData {
 	vector<oglplus::Vec2f> uv;
 	vector<GLuint> id;
 
-	MeshData(const vector<oglplus::Vec3f> &vt, const vector<oglplus::Vec2f> &uv, const vector<GLuint> &id) : triCnt(vt.size()), vt(vt), uv(uv), id(id) {
+	MeshData(const vector<oglplus::Vec3f> &vt, const vector<oglplus::Vec2f> &uv, const vector<GLuint> &id) : vt(vt), uv(uv), id(id) {
 		assert(vt.size() == uv.size() && vt.size() == id.size());
+		assert((vt.size() % 3) == 0);
+		triCnt = vt.size() / 3;
 	}
 };
 
 namespace Md {
 	struct TexPair {
-		Buffer uv;
-		Texture tex;
+		shared_ptr<Buffer> uv;
+		shared_ptr<Texture> tex;
+
+		TexPair() : uv(new Buffer()), tex(new Texture()) {}
 	};
 
 	struct MdD {
 		size_t triCnt;
 
-		Buffer id;
-		Buffer vt;
+		shared_ptr<Buffer> id;
+		shared_ptr<Buffer> vt;
 		TexPair tp;
 
-		MdD(const MeshData &md, const Texture &tex) {
-			triCnt = md.triCnt;
+		MdD(const MeshData &md, shared_ptr<Texture> tex) : triCnt(md.triCnt), id(new Buffer()), vt(new Buffer()) {
 
-			id.Bind(oglplus::BufferOps::Target::Array);
+			id->Bind(oglplus::BufferOps::Target::Array);
 			{
 				vector<GLuint> v;
 				for (auto &i : md.id) {
@@ -309,7 +312,7 @@ namespace Md {
 				Buffer::Data(oglplus::BufferOps::Target::Array, v);
 			}
 
-			vt.Bind(oglplus::BufferOps::Target::Array);
+			vt->Bind(oglplus::BufferOps::Target::Array);
 			{
 				vector<GLfloat> v;
 				for (auto &i : md.vt) {
@@ -320,7 +323,7 @@ namespace Md {
 
 			/* TexPair */
 
-			tp.uv.Bind(oglplus::BufferOps::Target::Array);
+			tp.uv->Bind(oglplus::BufferOps::Target::Array);
 			{
 				vector<GLfloat> v;
 				for (auto &i : md.uv) {
@@ -353,18 +356,22 @@ namespace Md {
 
 	class ShdTexSimple : public Shd {
 	public:
-		Program prog;
-		VertexArray va;
+		shared_ptr<Program> prog;
+		shared_ptr<VertexArray> va;
 
 		size_t triCnt;
 
-		ShdTexSimple() : prog(ShaderTexSimple()), triCnt(0) {}
+		ShdTexSimple() :
+			prog(shared_ptr<Program>(ShaderTexSimple())),
+			va(new VertexArray()),
+			triCnt(0) {}
+
 		void Prime(const MdD &md, const MdT &mt) {
 			/* MdD */
 
 			triCnt = md.triCnt;
 
-			va.Bind();
+			va->Bind();
 
 			/* FIXME: Really hard to navigate source but shader_data.hpp::_call_set_t indicates
 			   its 'program' argument is unused. Implies a program needs to be already bound at call time
@@ -374,26 +381,26 @@ namespace Md {
 			   ProgramUniformSetOps ... SpecificProgramCallOps */
 			/* prog.Use(); */
 
-			md.id.Bind(oglplus::BufferOps::Target::ElementArray);
+			md.id->Bind(oglplus::BufferOps::Target::ElementArray);
 
-			md.vt.Bind(oglplus::BufferOps::Target::Array);
-			(prog|"Position").Setup(3, oglplus::DataType::Float).Enable();
+			md.vt->Bind(oglplus::BufferOps::Target::Array);
+			(*prog|"Position").Setup(3, oglplus::DataType::Float).Enable();
 
 			/* TexPair */
 
-			md.tp.uv.Bind(oglplus::BufferOps::Target::Array);
-			(prog|"TexCoord").Setup(2, oglplus::DataType::Float).Enable();
+			md.tp.uv->Bind(oglplus::BufferOps::Target::Array);
+			(*prog|"TexCoord").Setup(2, oglplus::DataType::Float).Enable();
 
-			ProgramUniformSampler(prog, "TexUnit") = 0;
+			ProgramUniformSampler(*prog, "TexUnit") = 0;
 
-			md.tp.tex.Active(0);
-			md.tp.tex.Bind(oglplus::TextureOps::Target::_2D);
+			md.tp.tex->Active(0);
+			md.tp.tex->Bind(oglplus::TextureOps::Target::_2D);
 
 			/* MdT */
 
-			ProgramUniform<Mat4f>(prog, "ProjectionMatrix") = mt.ProjectionMatrix;
-			ProgramUniform<Mat4f>(prog, "CameraMatrix") = mt.CameraMatrix;
-			ProgramUniform<Mat4f>(prog, "ModelMatrix") = mt.ModelMatrix;
+			ProgramUniform<Mat4f>(*prog, "ProjectionMatrix") = mt.ProjectionMatrix;
+			ProgramUniform<Mat4f>(*prog, "CameraMatrix") = mt.CameraMatrix;
+			ProgramUniform<Mat4f>(*prog, "ModelMatrix") = mt.ModelMatrix;
 
 			Validate();
 		}
@@ -401,15 +408,15 @@ namespace Md {
 		void Draw() {
 			assert(IsValid());
 
-			prog.Use();
+			prog->Use();
 			Ctx::DrawArrays(PrimitiveType::Triangles, 0, triCnt * 3);
-			prog.UseNone();
+			prog->UseNone();
 		}
 
 		void UnPrime() {
 			Invalidate();
 
-			va.Unbind();
+			va->Unbind();
 
 			Texture::Unbind(oglplus::TextureOps::Target::_2D);
 			Buffer::Unbind(oglplus::BufferOps::Target::Array);
@@ -473,7 +480,7 @@ struct Ex2 : public ExBase {
 		assert(rn.mNumMeshes == 1);
 		assert(MatSimilar(rn.mTransformation, aiMatrix4x4(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1)));
 
-		mdd = make_shared<Md::MdD>(MeshExtract(s, m), CreateTexture("C:\\Users\\Andrej\\Documents\\BlendTmp\\bTest01.bmp"));
+		mdd = make_shared<Md::MdD>(MeshExtract(s, m), shared_ptr<Texture>(CreateTexture("C:\\Users\\Andrej\\Documents\\BlendTmp\\bTest01.bmp")));
 		mdt = make_shared<Md::MdT>(CamMatrixf::PerspectiveX(Degrees(90), GLfloat(G_WIN_W)/G_WIN_H, 1, 30), CamMatrixf::CameraMatrix(), ModelMatrixf().TranslationZ(-2.0));
 	}
 
