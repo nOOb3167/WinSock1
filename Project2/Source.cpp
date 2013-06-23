@@ -108,16 +108,16 @@ GLubyte * CreateImageBufRGB(const char *fname, int *w, int *h) {
 			buf[(y * bInfo.bmiHeader.biWidth * 4) + (x * 4) + 2] = tmp0;
 		}
 
-	r = DeleteDC(hdc);
-	assert(r);
+		r = DeleteDC(hdc);
+		assert(r);
 
-	r = DeleteObject(hBmp);
-	assert(r);
+		r = DeleteObject(hBmp);
+		assert(r);
 
-	*w = tmpW;
-	*h = tmpH;
+		*w = tmpW;
+		*h = tmpH;
 
-	return buf;
+		return buf;
 };
 
 oglplus::Texture * CreateTexture(const char *fname) {
@@ -388,11 +388,11 @@ namespace Md {
 			va->Bind();
 
 			/* FIXME: Really hard to navigate source but shader_data.hpp::_call_set_t indicates
-			   its 'program' argument is unused. Implies a program needs to be already bound at call time
-			   of (prog/blah) aka Uniform<blah>(prog, blah) = blah.
-			   But apparently not for ProgramUniform (OpenGL 4.1 or ARB_separate_shader_objects)
-			   UniformSetOps        ... ActiveProgramCallOps
-			   ProgramUniformSetOps ... SpecificProgramCallOps */
+			its 'program' argument is unused. Implies a program needs to be already bound at call time
+			of (prog/blah) aka Uniform<blah>(prog, blah) = blah.
+			But apparently not for ProgramUniform (OpenGL 4.1 or ARB_separate_shader_objects)
+			UniformSetOps        ... ActiveProgramCallOps
+			ProgramUniformSetOps ... SpecificProgramCallOps */
 			/* prog.Use(); */
 
 			md.id->Bind(oglplus::BufferOps::Target::ElementArray);
@@ -470,7 +470,9 @@ struct Ex2 : public ExBase {
 	shared_ptr<Md::MdD> mdd;
 	shared_ptr<Md::MdT> mdt;
 
-	Ex2() {
+	int tick;
+
+	Ex2() : tick(0) {
 		scene = const_cast<aiScene *>(aiImportFile("C:\\Users\\Andrej\\Documents\\BlendTmp\\t01_OrientPlace.dae", 0));
 		assert(scene);
 
@@ -495,16 +497,30 @@ struct Ex2 : public ExBase {
 		assert(MatSimilar(rn.mTransformation, aiMatrix4x4(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1)));
 
 		mdd = make_shared<Md::MdD>(MeshExtract(s, m), shared_ptr<Texture>(CreateTexture("C:\\Users\\Andrej\\Documents\\BlendTmp\\bTest01.bmp")));
-		mdt = make_shared<Md::MdT>(CamMatrixf::PerspectiveX(Degrees(90), GLfloat(G_WIN_W)/G_WIN_H, 1, 30), CamMatrixf::CameraMatrix(), ModelMatrixf().TranslationZ(-2.0));
+		mdt = make_shared<Md::MdT>(
+			CamMatrixf::PerspectiveX(Degrees(90), GLfloat(G_WIN_W)/G_WIN_H, 1, 30),
+			CamMatrixf::CameraMatrix(),
+			ModelMatrixf());
 	}
 
 	void Display() {
+		mdt = make_shared<Md::MdT>(
+			CamMatrixf::PerspectiveX(Degrees(90), GLfloat(G_WIN_W)/G_WIN_H, 1, 30),
+			CamMatrixf::Orbiting(oglplus::Vec3f(0, 0, 0), 3, Degrees(float(tick * 5)), Degrees(15)),
+			ModelMatrixf());
+		tick++;
+
 		shdTs.Prime(*mdd, *mdt);
 		shdTs.Draw();
 		shdTs.UnPrime();
 	}
 };
 
+
+void timerfunc(int msecTime) {
+	glutPostRedisplay();
+	glutTimerFunc(msecTime, timerfunc, msecTime);
+}
 
 template<typename ExType>
 void RunExample(int argc, char **argv) {
@@ -543,6 +559,8 @@ void RunExample(int argc, char **argv) {
 		};
 
 		glutDisplayFunc(dispfunc);
+		glutTimerFunc(33, timerfunc, 33);
+
 		glutMainLoop();
 	} catch(oglplus::CompileError &e) {
 		std::cerr << e.Log();
