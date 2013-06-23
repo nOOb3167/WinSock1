@@ -71,6 +71,11 @@ GLubyte * CreateImageBufRGB(const char *fname, int *w, int *h) {
 	r = GetDIBits(hdc, hBmp, 0, 0, NULL, &bInfo, DIB_RGB_COLORS);
 	assert(r);
 
+	/* http://msdn.microsoft.com/en-us/library/windows/desktop/dd183375%28v=vs.85%29.aspx
+	If the height is negative, the bitmap is a top-down DIB and its origin is the upper left corner.
+	*/
+	assert(bInfo.bmiHeader.biWidth >= 0);
+
 	/* Only interested in Width and Height, now prime the structure for the 2nd GetDIBits call.
 	http://msdn.microsoft.com/en-us/library/windows/desktop/dd183376%28v=vs.85%29.aspx
 	If biBitCount = 32 && biCompression = BI_RGB then bmiColors will be empty.
@@ -93,6 +98,15 @@ GLubyte * CreateImageBufRGB(const char *fname, int *w, int *h) {
 
 	r = GetDIBits(hdc, hBmp, 0, bInfo.bmiHeader.biHeight, buf, &bInfo, DIB_RGB_COLORS);
 	assert(r);
+
+	/* Compensate for BGRA (Into RGBA) */
+	for (int y = 0; y < bInfo.bmiHeader.biHeight; y++)
+		for (int x = 0; x < bInfo.bmiHeader.biWidth; x++) {
+			GLubyte tmp0 = buf[(y * bInfo.bmiHeader.biWidth * 4) + (x * 4) + 0];
+			GLubyte tmp2 = buf[(y * bInfo.bmiHeader.biWidth * 4) + (x * 4) + 2];
+			buf[(y * bInfo.bmiHeader.biWidth * 4) + (x * 4) + 0] = tmp2;
+			buf[(y * bInfo.bmiHeader.biWidth * 4) + (x * 4) + 2] = tmp0;
+		}
 
 	r = DeleteDC(hdc);
 	assert(r);
@@ -191,7 +205,7 @@ struct Ex1 : public ExBase {
 			out vec4 fragColor;\
 			void main(void) {\
 			vec4 t = texture(TexUnit, vTexCoord);\
-			fragColor = vec4(1.0, t.gb, 1.0);\
+			fragColor = vec4(t.rgb, 1.0);\
 			}"
 			);
 		fs.Compile();
