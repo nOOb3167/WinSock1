@@ -333,7 +333,7 @@ struct MeshDataAnim {
 	vector<oglplus::Mat4f> offsetMatrix;
 	vector<array<float, G_MAX_BONES_INFLUENCING> > weight;
 
-	MeshDataAnim(const vector<string> &bone, const vector<oglplus::Mat4f> offsetMatrix, vector<array<float, G_MAX_BONES_INFLUENCING> > weight) :
+	MeshDataAnim(const vector<string> &bone, const vector<oglplus::Mat4f> &offsetMatrix, vector<array<float, G_MAX_BONES_INFLUENCING> > &weight) :
 		bone(bone), offsetMatrix(offsetMatrix), weight(weight)
 	{
 		assert(bone.size() == offsetMatrix.size());
