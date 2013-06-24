@@ -1,9 +1,11 @@
 #include <cstdlib>
 #include <cassert>
 
+#include <algorithm>
 #include <iostream>
 #include <memory>
 #include <vector>
+#include <deque>
 
 #include <assimp/cimport.h>
 #include <assimp/scene.h>
@@ -14,6 +16,8 @@
 
 #define G_WIN_W 800
 #define G_WIN_H 800
+
+#define G_MAX_BONES_INFLUENCING 4
 
 using namespace std;
 using namespace oglplus;
@@ -171,6 +175,21 @@ bool MatSimilar3(const aiMatrix3x3 &a, const aiMatrix3x3 &b) {
 	else return false;
 }
 
+oglplus::Mat4f MatOglplusFromAi(const aiMatrix4x4 &m) {
+	return oglplus::Mat4f(
+		m.a1, m.a2, m.a3, m.a4,
+		m.b1, m.b2, m.b3, m.b4,
+		m.c1, m.c2, m.c3, m.c4,
+		m.d1, m.d2, m.d3, m.d4);
+};
+
+aiNode & CheckFindNode(const aiNode &n, const char *name) {
+	/* FIXME: Grrr */
+	aiNode *w = const_cast<aiNode &>(n).FindNode(name);
+	assert(w);
+	return *w;
+}
+
 struct Ex1 : public ExBase {
 	aiScene *scene;
 	shared_ptr<Texture> tex;
@@ -308,6 +327,101 @@ struct MeshData {
 		triCnt = vt.size() / 3;
 	}
 };
+
+struct MeshDataAnim {
+	vector<string> bone;
+	vector<oglplus::Mat4f> offsetMatrix;
+	vector<array<float, G_MAX_BONES_INFLUENCING> > weight;
+
+	MeshDataAnim(const vector<string> &bone, const vector<oglplus::Mat4f> offsetMatrix, vector<array<float, G_MAX_BONES_INFLUENCING> > weight) :
+		bone(bone), offsetMatrix(offsetMatrix), weight(weight)
+	{
+		assert(bone.size() == offsetMatrix.size());
+		/* FIXME: Maybe also check weights being zero or summing to 1.0 */
+	}
+};
+
+MeshDataAnim MeshExtractAnim(const aiScene &s, const aiMesh &m) {
+
+	assert(m.mNumBones <= G_MAX_BONES_INFLUENCING);
+
+	const int numBone = m.mNumBones;
+	const int numVert = m.mNumVertices;
+
+	array<float, G_MAX_BONES_INFLUENCING> emPty;
+	for (size_t i = 0; i < emPty.size(); i++) emPty[i] = 0.0;
+
+	vector<string> bone;
+	vector<oglplus::Mat4f> offsetMatrix;
+	vector<array<float, G_MAX_BONES_INFLUENCING> > weight(numVert, emPty);
+
+	for (int i = 0; i < numBone; i++)
+		CheckFindNode(*s.mRootNode, m.mBones[i]->mName.C_Str());
+
+	/* Construct 'bone' and 'offsetMatrix' */
+	
+	for (int i = 0; i < numBone; i++) {
+		bone.push_back(string(m.mBones[i]->mName.C_Str()));
+		offsetMatrix.push_back(MatOglplusFromAi(m.mBones[i]->mOffsetMatrix));
+	}
+
+	/* Prepare to construct 'weight' - Get the required data into a more suitable format first */
+
+	struct WeightPair {
+		unsigned int vertexId;
+		float weight;
+		WeightPair(unsigned int vertexId, float weight) : vertexId(vertexId), weight(weight) {}
+	};
+
+	vector<vector<WeightPair> > allPairs(numBone);
+
+	for (int i = 0; i < numBone; i++) {
+		const aiBone &b = *m.mBones[i];
+
+		deque<WeightPair> wp;
+		for (size_t j = 0; j < b.mNumWeights; j++)
+			wp.push_back(WeightPair(b.mWeights[i].mVertexId, b.mWeights[i].mWeight));
+		sort(wp.begin(), wp.end(), [](const WeightPair &a, const WeightPair &b) { return a.vertexId < b.vertexId; });
+
+		vector<bool> present(numVert, false);
+		for (size_t j = 0; j < wp.size(); j++)
+			present.at(wp[j].vertexId) = true;
+
+		/* 'wp' now [id0, ..., idn] ; where an aiWeight with id=idX was present in mWeights */
+		/* 'present' now [bool0,...,booln] ; where true if aiWeight with id=idX was present in mWeights */
+
+		/* To fill out a WeightPair vector where every 'id' from 0 to 'numVert' is present (Thus filling the gaps):
+		Traverse present in order from 0 to numVert.
+		false -> A gap, fill with a zero default.
+		true  -> An existing weight. Get, then remove from 'wp'.
+		Since the traversal is in order, and previous iterations popped all 'wp' members with a lower 'id',
+		the wanted weight is at 'wp'.front. */
+
+		vector<WeightPair> wpFull;
+		for (int j = 0; j < numVert; j++) {
+			if (present[j] == false) {
+				/* FIXME: Should bones that are not influencing a particular vertex be getting a zero weight? (Likely yes) */
+				wpFull.push_back(WeightPair(j, 0.0));
+			} else {
+				wpFull.push_back(wp.front());
+				wp.pop_front();
+			}
+		}
+
+		allPairs.push_back(move(wpFull));
+	}
+
+	/* Construct 'weight' */
+
+	for (int i = 0; i < numVert; i++) {
+		for (int j = 0; j < numBone; j++) {
+			assert(allPairs[j][i].vertexId == i);
+			weight[i][j] = allPairs[j][i].weight;
+		}
+	}
+
+	return MeshDataAnim(move(bone), move(offsetMatrix), move(weight));
+}
 
 MeshData MeshExtract(const aiScene &s, const aiMesh &m) {
 	vector<oglplus::Vec3f> vt;
@@ -470,13 +584,6 @@ namespace Md {
 			Buffer::Unbind(oglplus::BufferOps::Target::ElementArray);
 		}
 	};
-}
-
-aiNode & CheckFindNode(const aiNode &n, const char *name) {
-	/* FIXME: Grrr */
-	aiNode *w = const_cast<aiNode &>(n).FindNode(name);
-	assert(w);
-	return *w;
 }
 
 void CheckOrientPlaceMesh(const aiMesh &m) {
