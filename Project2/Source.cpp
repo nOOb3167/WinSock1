@@ -450,6 +450,68 @@ MeshData MeshExtract(const aiScene &s, const aiMesh &m) {
 	return MeshData(vt, uv, id);
 }
 
+class NodeMapEntry {
+	string name;
+	int    id;
+public:
+	NodeMapEntry(const string &name, const int &id) : name(name), id(id) {}
+	NodeMapEntry(const aiNode &node) {}
+	friend class NodeMap;
+};
+
+class MeshNode {
+public:
+	NodeMapEntry name;
+
+	MeshNode(const aiNode &node) :
+		name(string(node.mName.C_Str()), -1) {}
+};
+
+class NodeMap {
+	typedef map<string, shared_ptr<MeshNode> > mapNodes_t;
+	typedef vector<shared_ptr<MeshNode> > vecNodes_t;
+	mapNodes_t mapNodes;
+	vecNodes_t vecNodes;
+	NodeMapEntry root;
+
+public:
+	NodeMap(const aiNode &node) :
+		root("INVALID_NAME", -1)
+	{
+		mapNodes_t *mNodes = &mapNodes;
+		vecNodes_t *vNodes = &vecNodes;
+
+		vector<pair<string, NodeMapEntry *> > toFix;
+		toFix.push_back(make_pair(node.mName.C_Str(), &root));
+
+		function<void (const aiNode &)> helper = [&helper, &mNodes, &vNodes, &toFix](const aiNode &n) {
+			string nodeName(n.mName.C_Str());
+
+			/* In this pass: Can fill in id of the currently processed node */
+			int ownId = vNodes->size();
+
+			shared_ptr<MeshNode> w = shared_ptr<MeshNode>(new MeshNode(n));
+
+			mNodes->insert(make_pair(nodeName, w));
+			vNodes->push_back(w);
+
+			const shared_ptr<MeshNode> &mn = mNodes->find(nodeName)->second;
+			toFix.push_back(make_pair(nodeName, &mn->name));
+
+			for (size_t i = 0; i < n.mNumChildren; i++)
+				helper(*n.mChildren[i]);
+		};
+
+		helper(node);
+	}
+
+	MeshNode & GetRef(const NodeMapEntry &nme) {
+		auto it = mapNodes.find(nme.name);
+		assert(it != mapNodes.end());
+		return *it->second;
+	}
+};
+
 namespace Md {
 	struct TexPair {
 		shared_ptr<Buffer> uv;
@@ -594,7 +656,7 @@ void CheckUniqueNodeNames(const aiScene &s) {
 		(*nodesMet)++;
 		names->insert(string(n.mName.C_Str()));
 
-		for (int i = 0; i < n.mNumChildren; i++)
+		for (size_t i = 0; i < n.mNumChildren; i++)
 			helper(*n.mChildren[i], names, nodesMet);
 	};
 
