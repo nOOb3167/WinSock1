@@ -373,14 +373,14 @@ MeshDataAnim MeshExtractAnim(const aiScene &s, const aiMesh &m) {
 		WeightPair(unsigned int vertexId, float weight) : vertexId(vertexId), weight(weight) {}
 	};
 
-	vector<vector<WeightPair> > allPairs(numBone);
+	vector<vector<WeightPair> > allPairs;
 
 	for (int i = 0; i < numBone; i++) {
 		const aiBone &b = *m.mBones[i];
 
 		deque<WeightPair> wp;
 		for (size_t j = 0; j < b.mNumWeights; j++)
-			wp.push_back(WeightPair(b.mWeights[i].mVertexId, b.mWeights[i].mWeight));
+			wp.push_back(WeightPair(b.mWeights[j].mVertexId, b.mWeights[j].mWeight));
 		sort(wp.begin(), wp.end(), [](const WeightPair &a, const WeightPair &b) { return a.vertexId < b.vertexId; });
 
 		vector<bool> present(numVert, false);
@@ -713,6 +713,8 @@ struct Ex3 : public ExBase {
 		aiMesh &m = *s.mMeshes[0];
 
 		CheckBone(s);
+
+		MeshDataAnim mda = MeshExtractAnim(s, m);
 	}
 
 	void Display() {
