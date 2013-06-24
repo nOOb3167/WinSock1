@@ -300,6 +300,30 @@ struct MeshData {
 	}
 };
 
+MeshData MeshExtract(const aiScene &s, const aiMesh &m) {
+	vector<oglplus::Vec3f> vt;
+	vector<oglplus::Vec2f> uv;
+	vector<GLuint> id;
+
+	for (size_t i = 0; i < m.mNumVertices; i++) {
+		aiVector3D v = m.mVertices[i];
+		vt.push_back(oglplus::Vec3f(v.x, v.y, v.z));
+	}
+
+	for (size_t i = 0; i < m.mNumVertices; i++) {
+		aiVector3D v = m.mTextureCoords[0][i];
+		uv.push_back(oglplus::Vec2f(v.x, v.y));
+	}
+
+	for (size_t i = 0; i < m.mNumFaces; i++) {
+		assert(m.mFaces[i].mNumIndices == 3);
+		for (size_t j = 0; j < 3; j++)
+			id.push_back(m.mFaces[i].mIndices[j]);
+	}
+
+	return MeshData(vt, uv, id);
+}
+
 namespace Md {
 	struct TexPair {
 		shared_ptr<Buffer> uv;
@@ -439,30 +463,6 @@ namespace Md {
 	};
 }
 
-MeshData MeshExtract(const aiScene &s, const aiMesh &m) {
-	vector<oglplus::Vec3f> vt;
-	vector<oglplus::Vec2f> uv;
-	vector<GLuint> id;
-
-	for (size_t i = 0; i < m.mNumVertices; i++) {
-		aiVector3D v = m.mVertices[i];
-		vt.push_back(oglplus::Vec3f(v.x, v.y, v.z));
-	}
-
-	for (size_t i = 0; i < m.mNumVertices; i++) {
-		aiVector3D v = m.mTextureCoords[0][i];
-		uv.push_back(oglplus::Vec2f(v.x, v.y));
-	}
-
-	for (size_t i = 0; i < m.mNumFaces; i++) {
-		assert(m.mFaces[i].mNumIndices == 3);
-		for (size_t j = 0; j < 3; j++)
-			id.push_back(m.mFaces[i].mIndices[j]);
-	}
-
-	return MeshData(vt, uv, id);
-}
-
 struct Ex2 : public ExBase {
 	aiScene *scene;
 
@@ -513,6 +513,16 @@ struct Ex2 : public ExBase {
 		shdTs.Prime(*mdd, *mdt);
 		shdTs.Draw();
 		shdTs.UnPrime();
+	}
+};
+
+struct Ex3 : public ExBase {
+	aiScene *scene;
+
+	Ex3() {
+	}
+
+	void Display() {
 	}
 };
 
