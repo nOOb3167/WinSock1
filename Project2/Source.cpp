@@ -1,11 +1,14 @@
 #include <cstdlib>
 #include <cassert>
 
+#include <functional>
 #include <algorithm>
 #include <iostream>
 #include <memory>
 #include <vector>
 #include <deque>
+#include <map>
+#include <set>
 
 #include <assimp/cimport.h>
 #include <assimp/scene.h>
@@ -586,6 +589,25 @@ namespace Md {
 	};
 }
 
+void CheckUniqueNodeNames(const aiScene &s) {
+	function<void (const aiNode &, set<string> *, int *)> helper = [&helper](const aiNode &n, set<string> *names, int *nodesMet) {
+		(*nodesMet)++;
+		names->insert(string(n.mName.C_Str()));
+
+		for (int i = 0; i < n.mNumChildren; i++)
+			helper(*n.mChildren[i], names, nodesMet);
+	};
+
+	set<string> names;
+	int nodesMet = 0;
+
+	assert(s.mRootNode);
+	helper(*s.mRootNode, &names, &nodesMet);
+
+	/* A duplicate insert would result in lower size */
+	assert(names.size() == nodesMet);
+}
+
 void CheckOrientPlaceMesh(const aiMesh &m) {
 	assert(m.mPrimitiveTypes == 4 && m.mNumFaces == 1 && m.GetNumUVChannels() == 1 && m.mNumUVComponents[0] == 2 && m.mNumVertices == 3);
 	assert(VecSimilar(m.mVertices[m.mFaces[0].mIndices[0]], aiVector3D(1.0, 0.0, 0.0)));
@@ -597,6 +619,8 @@ void CheckOrientPlaceMesh(const aiMesh &m) {
 }
 
 void CheckOrientPlace(const aiScene &s) {
+	CheckUniqueNodeNames(s);
+
 	assert(s.mNumMeshes == 1);
 
 	CheckOrientPlaceMesh(*s.mMeshes[0]);
@@ -642,6 +666,8 @@ void CheckBoneAnimation(const aiScene &s) {
 }
 
 void CheckBone(const aiScene &s) {
+	CheckUniqueNodeNames(s);
+
 	assert(s.mNumMeshes == 1);
 
 	aiNode &fakeRn = *s.mRootNode;
