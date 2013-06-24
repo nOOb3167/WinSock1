@@ -162,6 +162,15 @@ bool MatSimilar(const aiMatrix4x4 &a, const aiMatrix4x4 &b) {
 	else return false;
 }
 
+bool MatSimilar3(const aiMatrix3x3 &a, const aiMatrix3x3 &b) {
+	const float delta = 0.001f;
+	if (std::fabsf(a.a1 - b.a1) < delta && std::fabsf(a.a2 - b.a2) < delta && std::fabsf(a.a3 - b.a3) < delta &&
+		std::fabsf(a.b1 - b.b1) < delta && std::fabsf(a.b2 - b.b2) < delta && std::fabsf(a.b3 - b.b3) < delta &&
+		std::fabsf(a.c1 - b.c1) < delta && std::fabsf(a.c2 - b.c2) < delta && std::fabsf(a.c3 - b.c3) < delta)
+		return true;
+	else return false;
+}
+
 struct Ex1 : public ExBase {
 	aiScene *scene;
 	shared_ptr<Texture> tex;
@@ -463,6 +472,91 @@ namespace Md {
 	};
 }
 
+aiNode & CheckFindNode(const aiNode &n, const char *name) {
+	/* FIXME: Grrr */
+	aiNode *w = const_cast<aiNode &>(n).FindNode(name);
+	assert(w);
+	return *w;
+}
+
+void CheckOrientPlaceMesh(const aiMesh &m) {
+	assert(m.mPrimitiveTypes == 4 && m.mNumFaces == 1 && m.GetNumUVChannels() == 1 && m.mNumUVComponents[0] == 2 && m.mNumVertices == 3);
+	assert(VecSimilar(m.mVertices[m.mFaces[0].mIndices[0]], aiVector3D(1.0, 0.0, 0.0)));
+	assert(VecSimilar(m.mVertices[m.mFaces[0].mIndices[1]], aiVector3D(1.0, 1.0, 0.0)));
+	assert(VecSimilar(m.mVertices[m.mFaces[0].mIndices[2]], aiVector3D(0.0, 0.0, 0.0)));
+	assert(VecSimilar(m.mTextureCoords[0][m.mFaces[0].mIndices[0]], aiVector3D(1.0, 0.0, 0.0)));
+	assert(VecSimilar(m.mTextureCoords[0][m.mFaces[0].mIndices[1]], aiVector3D(1.0, 1.0, 0.0)));
+	assert(VecSimilar(m.mTextureCoords[0][m.mFaces[0].mIndices[2]], aiVector3D(0.0, 0.0, 0.0)));
+}
+
+void CheckOrientPlace(const aiScene &s) {
+	assert(s.mNumMeshes == 1);
+
+	CheckOrientPlaceMesh(*s.mMeshes[0]);
+
+	aiNode &fakeRn = *s.mRootNode;
+	assert(fakeRn.mName == aiString("Scene") && fakeRn.mNumChildren == 1);
+
+	aiNode &rn = *fakeRn.mChildren[0];
+	assert(rn.mName == aiString("Cube") && rn.mNumChildren == 0);
+	assert(rn.mNumMeshes == 1);
+	assert(MatSimilar(rn.mTransformation, aiMatrix4x4(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1)));
+}
+
+void CheckBoneAnimation(const aiScene &s) {
+	assert(s.mNumAnimations == 1);
+
+	aiAnimation &an = *s.mAnimations[0];
+	assert(an.mNumChannels == 1);
+
+	aiNodeAnim &ana = *an.mChannels[0];
+	assert(ana.mNodeName == aiString("Bone"));
+
+	assert(ana.mNumPositionKeys == 2 && ana.mNumRotationKeys == 2 && ana.mNumScalingKeys == 2);
+
+	aiMatrix3x3 mR0 = ana.mRotationKeys[0].mValue.GetMatrix();
+	aiMatrix3x3 mR1 = ana.mRotationKeys[1].mValue.GetMatrix();
+
+	assert(MatSimilar3(ana.mRotationKeys[0].mValue.GetMatrix(), aiMatrix3x3(
+		1,0,0,
+		0,0,-1,
+		0,1,0)));
+
+	assert(MatSimilar3(ana.mRotationKeys[1].mValue.GetMatrix(), aiMatrix3x3(
+		0,0,1,
+		1,0,0,
+		0,1,0)));
+
+	assert(VecSimilar(ana.mScalingKeys[0].mValue, aiVector3D(1,1,1)));
+	assert(VecSimilar(ana.mScalingKeys[1].mValue, aiVector3D(1,1,1)));
+
+	assert(VecSimilar(ana.mPositionKeys[0].mValue, aiVector3D(0,0,0)));
+	assert(VecSimilar(ana.mPositionKeys[1].mValue, aiVector3D(0,0,0)));
+}
+
+void CheckBone(const aiScene &s) {
+	assert(s.mNumMeshes == 1);
+
+	aiNode &fakeRn = *s.mRootNode;
+	assert(fakeRn.mName == aiString("Scene") && fakeRn.mNumChildren == 2);
+
+	aiNode &nCube = CheckFindNode(fakeRn, "Cube");
+	aiNode &nArmature = CheckFindNode(fakeRn, "Armature");
+	aiNode &nBone = CheckFindNode(fakeRn, "Bone");
+
+	assert(MatSimilar(nCube.mTransformation, aiMatrix4x4(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1)));
+	assert(MatSimilar(nArmature.mTransformation, aiMatrix4x4(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1)));
+
+	/* Bone left-handed */
+	assert(MatSimilar(nBone.mTransformation, aiMatrix4x4(
+		1,0,0,0,
+		0,0,-1,0,
+		0,1,0,0,
+		0,0,0,1)));
+
+	CheckBoneAnimation(s);
+}
+
 struct Ex2 : public ExBase {
 	aiScene *scene;
 
@@ -477,24 +571,9 @@ struct Ex2 : public ExBase {
 		assert(scene);
 
 		aiScene &s = *scene;
-		assert(s.mNumMeshes == 1);
-
 		aiMesh &m = *s.mMeshes[0];
-		assert(m.mPrimitiveTypes == 4 && m.mNumFaces == 1 && m.GetNumUVChannels() == 1 && m.mNumUVComponents[0] == 2 && m.mNumVertices == 3);
-		assert(VecSimilar(m.mVertices[m.mFaces[0].mIndices[0]], aiVector3D(1.0, 0.0, 0.0)));
-		assert(VecSimilar(m.mVertices[m.mFaces[0].mIndices[1]], aiVector3D(1.0, 1.0, 0.0)));
-		assert(VecSimilar(m.mVertices[m.mFaces[0].mIndices[2]], aiVector3D(0.0, 0.0, 0.0)));
-		assert(VecSimilar(m.mTextureCoords[0][m.mFaces[0].mIndices[0]], aiVector3D(1.0, 0.0, 0.0)));
-		assert(VecSimilar(m.mTextureCoords[0][m.mFaces[0].mIndices[1]], aiVector3D(1.0, 1.0, 0.0)));
-		assert(VecSimilar(m.mTextureCoords[0][m.mFaces[0].mIndices[2]], aiVector3D(0.0, 0.0, 0.0)));
 
-		aiNode &fakeRn = *s.mRootNode;
-		assert(fakeRn.mName == aiString("Scene") && fakeRn.mNumChildren == 1);
-
-		aiNode &rn = *fakeRn.mChildren[0];
-		assert(rn.mName == aiString("Cube") && rn.mNumChildren == 0);
-		assert(rn.mNumMeshes == 1);
-		assert(MatSimilar(rn.mTransformation, aiMatrix4x4(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1)));
+		CheckOrientPlace(s);
 
 		mdd = make_shared<Md::MdD>(MeshExtract(s, m), shared_ptr<Texture>(CreateTexture("C:\\Users\\Andrej\\Documents\\BlendTmp\\bTest01.bmp")));
 		mdt = make_shared<Md::MdT>(
@@ -520,6 +599,13 @@ struct Ex3 : public ExBase {
 	aiScene *scene;
 
 	Ex3() {
+		scene = const_cast<aiScene *>(aiImportFile("C:\\Users\\Andrej\\Documents\\BlendTmp\\t02_Bone.dae", 0));
+		assert(scene);
+
+		aiScene &s = *scene;
+		aiMesh &m = *s.mMeshes[0];
+
+		CheckBone(s);
 	}
 
 	void Display() {
@@ -585,7 +671,8 @@ void RunExample(int argc, char **argv) {
 int main(int argc, char **argv) {
 
 	//RunExample<Ex1>(argc, argv);
-	RunExample<Ex2>(argc, argv);
+	//RunExample<Ex2>(argc, argv);
+	RunExample<Ex3>(argc, argv);
 
 	return EXIT_SUCCESS;
 }
