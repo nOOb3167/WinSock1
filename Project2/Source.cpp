@@ -186,6 +186,13 @@ oglplus::Mat4f MatOglplusFromAi(const aiMatrix4x4 &m) {
 		m.d1, m.d2, m.d3, m.d4);
 };
 
+oglplus::Mat3f MatOglplusFromAi3(const aiMatrix3x3 &m) {
+	return oglplus::Mat3f(
+		m.a1, m.a2, m.a3,
+		m.b1, m.b2, m.b3,
+		m.c1, m.c2, m.c3);
+};
+
 aiNode & CheckFindNode(const aiNode &n, const char *name) {
 	/* FIXME: Grrr */
 	aiNode *w = const_cast<aiNode &>(n).FindNode(name);
@@ -344,6 +351,141 @@ struct MeshDataAnim {
 	}
 };
 
+struct AnimChan {
+	string nameAffected;
+	vector<oglplus::Vec3f> keyPos;
+	vector<oglplus::Mat3f> keyRot;
+	vector<oglplus::Vec3f> keySca;
+
+	AnimChan(const aiNodeAnim &na) {
+		nameAffected = string(na.mNodeName.C_Str());
+
+		assert(na.mNumPositionKeys == na.mNumRotationKeys && na.mNumPositionKeys == na.mNumScalingKeys);
+
+		/* No scaling aloud. Quiet only. */
+		for (size_t i = 0; i < na.mNumScalingKeys; i++)
+			assert(VecSimilar(na.mScalingKeys[i].mValue, aiVector3D(1,1,1)));
+
+		for (size_t i = 0; i < na.mNumPositionKeys; i++)
+			keyPos.push_back(oglplus::Vec3f(na.mPositionKeys[i].mValue.x, na.mPositionKeys[i].mValue.y, na.mPositionKeys[i].mValue.z));
+
+		for (size_t i = 0; i < na.mNumRotationKeys; i++)
+			keyRot.push_back(MatOglplusFromAi3(na.mRotationKeys[i].mValue.GetMatrix()));
+
+		for (size_t i = 0; i < na.mNumScalingKeys; i++)
+			keySca.push_back(oglplus::Vec3f(na.mScalingKeys[i].mValue.x, na.mScalingKeys[i].mValue.y, na.mScalingKeys[i].mValue.z));
+	}
+};
+
+struct AnimData {
+	string name;
+	vector<AnimChan> chan;
+
+	AnimData (const aiAnimation &an) {
+		name = string(an.mName.C_Str());
+		for (size_t i = 0; i < an.mNumChannels; i++)
+			chan.push_back(AnimChan(*an.mChannels[i]));
+	};
+};
+
+class NodeMapEntry {
+	string name;
+	int    id;
+	bool null;
+public:
+	NodeMapEntry(const string &name, const int &id, const bool &null = false) :
+		name(name),
+		id(id),
+		null(null) {}
+
+	friend class NodeMap;
+};
+
+class MeshNode {
+public:
+	NodeMapEntry name;
+
+	NodeMapEntry parent;
+	vector<NodeMapEntry> children;
+
+	MeshNode(const aiNode &node, const int &ownId) :
+		name(node.mName.C_Str(), ownId),
+		parent("INVALID_NAME", -1)
+	{
+		if (node.mParent != nullptr)
+			parent = NodeMapEntry(node.mParent->mName.C_Str(), -1);
+
+		for (size_t i = 0; i < node.mNumChildren; i++)
+			children.push_back(NodeMapEntry(node.mChildren[i]->mName.C_Str(), -1));
+	}
+};
+
+class NodeMap {
+	typedef map<string, shared_ptr<MeshNode> > mapNodes_t;
+	typedef vector<shared_ptr<MeshNode> > vecNodes_t;
+	mapNodes_t mapNodes;
+	vecNodes_t vecNodes;
+
+public:
+	NodeMap(const aiNode &node) {
+		mapNodes_t *mNodes = &mapNodes;
+		vecNodes_t *vNodes = &vecNodes;
+
+		/* In this pass: Able to fill-in id of the currently processed node:
+		All node.name's members are filled. Of node.parent and node.children[i], only the namestring. */
+
+		function<void (const aiNode &)> helper = [&helper, &mNodes, &vNodes](const aiNode &n) {
+			string nodeName(n.mName.C_Str());
+
+			int ownId = vNodes->size();
+
+			shared_ptr<MeshNode> w = shared_ptr<MeshNode>(new MeshNode(n, ownId));
+
+			mNodes->insert(make_pair(nodeName, w));
+			vNodes->push_back(w);
+
+			for (size_t i = 0; i < n.mNumChildren; i++)
+				helper(*n.mChildren[i]);
+		};
+
+		helper(node);
+
+		/* Extra pass: Using node.name lookups, fill the remaining */
+
+		for (size_t i = 0; i < vNodes->size(); i++) {
+			MeshNode &mn = *(*vNodes)[i];
+
+			if (i == 0)
+				mn.parent = NodeMapEntry(mn.parent.name, mn.parent.id, true);
+			else
+				mn.parent = NodeMapEntry(GetRefByName(mn.parent.name).name); /* FIXME: Copyconstructed */
+
+			for (auto &j : mn.children) {
+				assert(j.id == -1 && j.null == false);
+				j = NodeMapEntry(GetRefByName(j.name).name);
+			}
+		}
+	}
+
+	MeshNode & GetRefByName(const string &name) {
+		auto it = mapNodes.find(name);
+		assert(it != mapNodes.end());
+		return *it->second;
+	}
+
+	MeshNode & GetRefByEntry(const NodeMapEntry &nme) {
+		return GetRefByName(nme.name);
+	}
+};
+
+AnimData AnimExtract(const aiScene &s, const aiAnimation &an) {
+	return AnimData(an);
+}
+
+NodeMap NodeMapExtract(const aiScene &s, const aiNode &from) {
+	return NodeMap(from);
+}
+
 MeshDataAnim MeshExtractAnim(const aiScene &s, const aiMesh &m) {
 
 	assert(m.mNumBones <= G_MAX_BONES_INFLUENCING);
@@ -450,95 +592,6 @@ MeshData MeshExtract(const aiScene &s, const aiMesh &m) {
 	return MeshData(vt, uv, id);
 }
 
-class NodeMapEntry {
-	string name;
-	int    id;
-	bool null;
-public:
-	NodeMapEntry(const string &name, const int &id, const bool &null = false) :
-		name(name),
-		id(id),
-		null(null) {}
-
-	friend class NodeMap;
-};
-
-class MeshNode {
-public:
-	NodeMapEntry name;
-
-	NodeMapEntry parent;
-	vector<NodeMapEntry> children;
-
-	MeshNode(const aiNode &node, const int &ownId) :
-		name(node.mName.C_Str(), ownId),
-		parent("INVALID_NAME", -1)
-	{
-		if (node.mParent != nullptr)
-			parent = NodeMapEntry(node.mParent->mName.C_Str(), -1);
-
-		for (size_t i = 0; i < node.mNumChildren; i++)
-			children.push_back(NodeMapEntry(node.mChildren[i]->mName.C_Str(), -1));
-	}
-};
-
-class NodeMap {
-	typedef map<string, shared_ptr<MeshNode> > mapNodes_t;
-	typedef vector<shared_ptr<MeshNode> > vecNodes_t;
-	mapNodes_t mapNodes;
-	vecNodes_t vecNodes;
-
-public:
-	NodeMap(const aiNode &node) {
-		mapNodes_t *mNodes = &mapNodes;
-		vecNodes_t *vNodes = &vecNodes;
-
-		/* In this pass: Able to fill-in id of the currently processed node:
-		All node.name's members are filled. Of node.parent and node.children[i], only the namestring. */
-
-		function<void (const aiNode &)> helper = [&helper, &mNodes, &vNodes](const aiNode &n) {
-			string nodeName(n.mName.C_Str());
-
-			int ownId = vNodes->size();
-
-			shared_ptr<MeshNode> w = shared_ptr<MeshNode>(new MeshNode(n, ownId));
-
-			mNodes->insert(make_pair(nodeName, w));
-			vNodes->push_back(w);
-
-			for (size_t i = 0; i < n.mNumChildren; i++)
-				helper(*n.mChildren[i]);
-		};
-
-		helper(node);
-
-		/* Extra pass: Using node.name lookups, fill the remaining */
-
-		for (size_t i = 0; i < vNodes->size(); i++) {
-			MeshNode &mn = *(*vNodes)[i];
-
-			if (i == 0)
-				mn.parent = NodeMapEntry(mn.parent.name, mn.parent.id, true);
-			else
-				mn.parent = NodeMapEntry(GetRefByName(mn.parent.name).name); /* FIXME: Copyconstructed */
-
-			for (auto &j : mn.children) {
-				assert(j.id == -1 && j.null == false);
-				j = NodeMapEntry(GetRefByName(j.name).name);
-			}
-		}
-	}
-
-	MeshNode & GetRefByName(const string &name) {
-		auto it = mapNodes.find(name);
-		assert(it != mapNodes.end());
-		return *it->second;
-	}
-
-	MeshNode & GetRefByEntry(const NodeMapEntry &nme) {
-		return GetRefByName(nme.name);
-	}
-};
 
 namespace Md {
 	struct TexPair {
@@ -832,7 +885,10 @@ struct Ex3 : public ExBase {
 
 		CheckBone(s);
 
+		NodeMap nm = NodeMapExtract(s, CheckFindNode(*s.mRootNode, "Scene"));
+		MeshData md = MeshExtract(s, m);
 		MeshDataAnim mda = MeshExtractAnim(s, m);
+		AnimData ad = AnimExtract(s, *s.mAnimations[0]);
 	}
 
 	void Display() {
