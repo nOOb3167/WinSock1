@@ -362,7 +362,7 @@ MeshDataAnim MeshExtractAnim(const aiScene &s, const aiMesh &m) {
 		CheckFindNode(*s.mRootNode, m.mBones[i]->mName.C_Str());
 
 	/* Construct 'bone' and 'offsetMatrix' */
-	
+
 	for (int i = 0; i < numBone; i++) {
 		bone.push_back(string(m.mBones[i]->mName.C_Str()));
 		offsetMatrix.push_back(MatOglplusFromAi(m.mBones[i]->mOffsetMatrix));
@@ -453,9 +453,13 @@ MeshData MeshExtract(const aiScene &s, const aiMesh &m) {
 class NodeMapEntry {
 	string name;
 	int    id;
+	bool null;
 public:
-	NodeMapEntry(const string &name, const int &id) : name(name), id(id) {}
-	NodeMapEntry(const aiNode &node) {}
+	NodeMapEntry(const string &name, const int &id, const bool &null = false) :
+		name(name),
+		id(id),
+		null(null) {}
+
 	friend class NodeMap;
 };
 
@@ -463,8 +467,19 @@ class MeshNode {
 public:
 	NodeMapEntry name;
 
-	MeshNode(const aiNode &node) :
-		name(string(node.mName.C_Str()), -1) {}
+	NodeMapEntry parent;
+	vector<NodeMapEntry> children;
+
+	MeshNode(const aiNode &node, const int &ownId) :
+		name(node.mName.C_Str(), ownId),
+		parent("INVALID_NAME", -1)
+	{
+		if (node.mParent != nullptr)
+			parent = NodeMapEntry(node.mParent->mName.C_Str(), -1);
+
+		for (size_t i = 0; i < node.mNumChildren; i++)
+			children.push_back(NodeMapEntry(node.mChildren[i]->mName.C_Str(), -1));
+	}
 };
 
 class NodeMap {
@@ -472,43 +487,56 @@ class NodeMap {
 	typedef vector<shared_ptr<MeshNode> > vecNodes_t;
 	mapNodes_t mapNodes;
 	vecNodes_t vecNodes;
-	NodeMapEntry root;
 
 public:
-	NodeMap(const aiNode &node) :
-		root("INVALID_NAME", -1)
-	{
+	NodeMap(const aiNode &node) {
 		mapNodes_t *mNodes = &mapNodes;
 		vecNodes_t *vNodes = &vecNodes;
 
-		vector<pair<string, NodeMapEntry *> > toFix;
-		toFix.push_back(make_pair(node.mName.C_Str(), &root));
+		/* In this pass: Able to fill-in id of the currently processed node:
+		All node.name's members are filled. Of node.parent and node.children[i], only the namestring. */
 
-		function<void (const aiNode &)> helper = [&helper, &mNodes, &vNodes, &toFix](const aiNode &n) {
+		function<void (const aiNode &)> helper = [&helper, &mNodes, &vNodes](const aiNode &n) {
 			string nodeName(n.mName.C_Str());
 
-			/* In this pass: Can fill in id of the currently processed node */
 			int ownId = vNodes->size();
 
-			shared_ptr<MeshNode> w = shared_ptr<MeshNode>(new MeshNode(n));
+			shared_ptr<MeshNode> w = shared_ptr<MeshNode>(new MeshNode(n, ownId));
 
 			mNodes->insert(make_pair(nodeName, w));
 			vNodes->push_back(w);
-
-			const shared_ptr<MeshNode> &mn = mNodes->find(nodeName)->second;
-			toFix.push_back(make_pair(nodeName, &mn->name));
 
 			for (size_t i = 0; i < n.mNumChildren; i++)
 				helper(*n.mChildren[i]);
 		};
 
 		helper(node);
+
+		/* Extra pass: Using node.name lookups, fill the remaining */
+
+		for (size_t i = 0; i < vNodes->size(); i++) {
+			MeshNode &mn = *(*vNodes)[i];
+
+			if (i == 0)
+				mn.parent = NodeMapEntry(mn.parent.name, mn.parent.id, true);
+			else
+				mn.parent = NodeMapEntry(GetRefByName(mn.parent.name).name); /* FIXME: Copyconstructed */
+
+			for (auto &j : mn.children) {
+				assert(j.id == -1 && j.null == false);
+				j = NodeMapEntry(GetRefByName(j.name).name);
+			}
+		}
 	}
 
-	MeshNode & GetRef(const NodeMapEntry &nme) {
-		auto it = mapNodes.find(nme.name);
+	MeshNode & GetRefByName(const string &name) {
+		auto it = mapNodes.find(name);
 		assert(it != mapNodes.end());
 		return *it->second;
+	}
+
+	MeshNode & GetRefByEntry(const NodeMapEntry &nme) {
+		return GetRefByName(nme.name);
 	}
 };
 
@@ -750,6 +778,8 @@ void CheckBone(const aiScene &s) {
 		0,0,0,1)));
 
 	CheckBoneAnimation(s);
+
+	NodeMap nm(fakeRn);
 }
 
 struct Ex2 : public ExBase {
