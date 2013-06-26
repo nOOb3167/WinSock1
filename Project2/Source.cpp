@@ -426,6 +426,10 @@ public:
 		return null;
 	}
 
+	int GetId() const {
+		return id;
+	}
+
 private:
 	void SetNull() {
 		null = true;
@@ -768,6 +772,10 @@ namespace Md {
 		MdT(const Mat4f &p, const Mat4f &c, const Mat4f &m) : ProjectionMatrix(p), CameraMatrix(c), ModelMatrix(m) {}
 	};
 
+	struct MdA {
+
+	};
+
 	class Shd {
 		bool valid;
 	public:
@@ -776,6 +784,13 @@ namespace Md {
 		bool IsValid() { return valid; }
 	protected:
 		void Validate() { valid = true; }
+	};
+
+	class ShdZ {
+		ShdZ() {}
+		void Prime(const MdD &md, const MdT &mt) {}
+		void Draw();
+		void UnPrime();
 	};
 
 	class ShdTexSimple : public Shd {
@@ -821,6 +836,66 @@ namespace Md {
 			md.tp.tex->Bind(oglplus::TextureOps::Target::_2D);
 
 			/* MdT */
+
+			ProgramUniform<Mat4f>(*prog, "ProjectionMatrix") = mt.ProjectionMatrix;
+			ProgramUniform<Mat4f>(*prog, "CameraMatrix") = mt.CameraMatrix;
+			ProgramUniform<Mat4f>(*prog, "ModelMatrix") = mt.ModelMatrix;
+
+			Validate();
+		}
+
+		void Draw() {
+			assert(IsValid());
+
+			prog->Use();
+			Ctx::DrawArrays(PrimitiveType::Triangles, 0, triCnt * 3);
+			prog->UseNone();
+		}
+
+		void UnPrime() {
+			Invalidate();
+
+			va->Unbind();
+
+			Texture::Unbind(oglplus::TextureOps::Target::_2D);
+			Buffer::Unbind(oglplus::BufferOps::Target::Array);
+			Buffer::Unbind(oglplus::BufferOps::Target::ElementArray);
+		}
+	};
+
+	class ShdTexBone : public Shd {
+	public:
+		shared_ptr<Program> prog;
+		shared_ptr<VertexArray> va;
+
+		size_t triCnt;
+
+		ShdTexBone() :
+			prog(shared_ptr<Program>(ShaderTexSimple())),
+			va(new VertexArray()),
+			triCnt(0) {}
+
+		void Prime(const MdD &md, const MdT &mt, const MdA &ma) {
+			/* MdD */
+
+			triCnt = md.triCnt;
+
+			va->Bind();
+
+			md.id->Bind(oglplus::BufferOps::Target::ElementArray);
+
+			md.vt->Bind(oglplus::BufferOps::Target::Array);
+			(*prog|"Position").Setup(3, oglplus::DataType::Float).Enable();
+
+			/* TexPair */
+
+			md.tp.uv->Bind(oglplus::BufferOps::Target::Array);
+			(*prog|"TexCoord").Setup(2, oglplus::DataType::Float).Enable();
+
+			ProgramUniformSampler(*prog, "TexUnit") = 0;
+
+			md.tp.tex->Active(0);
+			md.tp.tex->Bind(oglplus::TextureOps::Target::_2D);
 
 			ProgramUniform<Mat4f>(*prog, "ProjectionMatrix") = mt.ProjectionMatrix;
 			ProgramUniform<Mat4f>(*prog, "CameraMatrix") = mt.CameraMatrix;
@@ -953,13 +1028,12 @@ void CheckBone(const aiScene &s) {
 }
 
 struct Ex2 : public ExBase {
+	int tick;
 	aiScene *scene;
 
 	Md::ShdTexSimple shdTs;
 	shared_ptr<Md::MdD> mdd;
 	shared_ptr<Md::MdT> mdt;
-
-	int tick;
 
 	Ex2() : tick(0) {
 		scene = const_cast<aiScene *>(aiImportFile("C:\\Users\\Andrej\\Documents\\BlendTmp\\t01_OrientPlace.dae", 0));
@@ -991,9 +1065,20 @@ struct Ex2 : public ExBase {
 };
 
 struct Ex3 : public ExBase {
+	int tick;
 	aiScene *scene;
 
-	Ex3() {
+	shared_ptr<Texture> tex;
+
+	shared_ptr<NodeMap> nodeMap;
+	shared_ptr<AnimData> animData;
+
+	Md::ShdTexBone shd;
+	shared_ptr<Md::MdD> mdd;
+	shared_ptr<Md::MdT> mdt;
+	shared_ptr<Md::MdA> mda;
+
+	Ex3() : tick(0) {
 		scene = const_cast<aiScene *>(aiImportFile("C:\\Users\\Andrej\\Documents\\BlendTmp\\t02_Bone.dae", 0));
 		assert(scene);
 
@@ -1002,19 +1087,44 @@ struct Ex3 : public ExBase {
 
 		CheckBone(s);
 
-		NodeMap nm = NodeMapExtract(s, CheckFindNode(*s.mRootNode, "Scene"));
-		MeshData md = MeshExtract(s, m);
-		MeshDataAnim mda = MeshExtractAnim(s, m);
-		AnimData ad = AnimExtract(s, *s.mAnimations[0]);
+		tex = shared_ptr<Texture>(CreateTexture("C:\\Users\\Andrej\\Documents\\BlendTmp\\bTest01.bmp"));
 
-		vector<oglplus::Mat4f> onlyTrafo = nm.GetOnlyTrafo();
-		vector<oglplus::Mat4f> updTrafo = onlyTrafo;
-		vector<oglplus::Mat4f> accTrafo;
-		TrafoUpdateFromAnim(ad, nm, &updTrafo, 1);
-		TrafoConstructAccumulated(nm, updTrafo, &accTrafo);
+		nodeMap = shared_ptr<NodeMap>(new NodeMap(NodeMapExtract(s, CheckFindNode(*s.mRootNode, "Scene"))));
+		animData = shared_ptr<AnimData>(new AnimData(AnimExtract(s, *s.mAnimations[0])));
+
+		//TODO: Convert to mda
+		//MeshDataAnim mda = MeshExtractAnim(s, m);
+
+		mdd = make_shared<Md::MdD>(MeshExtract(s, m), tex);
+		mdt = make_shared<Md::MdT>(
+			CamMatrixf::PerspectiveX(Degrees(90), GLfloat(G_WIN_W)/G_WIN_H, 1, 30),
+			CamMatrixf::CameraMatrix(),
+			ModelMatrixf());
 	}
 
 	void Display() {
+		vector<oglplus::Mat4f> onlyTrafo = nodeMap->GetOnlyTrafo();
+		vector<oglplus::Mat4f> updTrafo = onlyTrafo;
+		vector<oglplus::Mat4f> accTrafo;
+		TrafoUpdateFromAnim(*animData, *nodeMap, &updTrafo, (tick % 10) < 5);
+		TrafoConstructAccumulated(*nodeMap, updTrafo, &accTrafo);
+
+		MeshData newMd = MeshExtract(*scene, *scene->mMeshes[0]);
+		const MeshNode &nodeCube = nodeMap->GetRefByName("Cube");
+		const MeshNode &nodeBone = nodeMap->GetRefByName("Bone");
+		MeshDataAnim dataAnim = MeshExtractAnim(*scene, *scene->mMeshes[0]);
+		assert(dataAnim.bone.at(0) == "Bone");
+		oglplus::Mat4f magicTrafo = accTrafo[nodeBone.name.GetId()] * dataAnim.offsetMatrix[0];
+
+		mdt = make_shared<Md::MdT>(
+			CamMatrixf::PerspectiveX(Degrees(90), GLfloat(G_WIN_W)/G_WIN_H, 1, 30),
+			CamMatrixf::Orbiting(oglplus::Vec3f(0, 0, 0), 3, Degrees(float(tick * 5)), Degrees(15)),
+			magicTrafo);
+		tick++;
+
+		shd.Prime(*mdd, *mdt, *mda);
+		shd.Draw();
+		shd.UnPrime();
 	}
 };
 
