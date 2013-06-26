@@ -146,8 +146,10 @@ oglplus::Texture * CreateTexture(const char *fname) {
 }
 
 struct ExBase {
+	int tick;
+	ExBase() : tick(-1) {}
 	virtual ~ExBase() {};
-	virtual void Display() = 0;
+	virtual void Display() { tick++; };
 };
 
 bool VecSimilar(const aiVector3D &a, const aiVector3D &b) {
@@ -1028,14 +1030,13 @@ void CheckBone(const aiScene &s) {
 }
 
 struct Ex2 : public ExBase {
-	int tick;
 	aiScene *scene;
 
 	Md::ShdTexSimple shdTs;
 	shared_ptr<Md::MdD> mdd;
 	shared_ptr<Md::MdT> mdt;
 
-	Ex2() : tick(0) {
+	Ex2() {
 		scene = const_cast<aiScene *>(aiImportFile("C:\\Users\\Andrej\\Documents\\BlendTmp\\t01_OrientPlace.dae", 0));
 		assert(scene);
 
@@ -1052,11 +1053,12 @@ struct Ex2 : public ExBase {
 	}
 
 	void Display() {
+		ExBase::Display();
+
 		mdt = make_shared<Md::MdT>(
 			CamMatrixf::PerspectiveX(Degrees(90), GLfloat(G_WIN_W)/G_WIN_H, 1, 30),
 			CamMatrixf::Orbiting(oglplus::Vec3f(0, 0, 0), 3, Degrees(float(tick * 5)), Degrees(15)),
 			ModelMatrixf());
-		tick++;
 
 		shdTs.Prime(*mdd, *mdt);
 		shdTs.Draw();
@@ -1065,7 +1067,6 @@ struct Ex2 : public ExBase {
 };
 
 struct Ex3 : public ExBase {
-	int tick;
 	aiScene *scene;
 
 	shared_ptr<Texture> tex;
@@ -1078,7 +1079,7 @@ struct Ex3 : public ExBase {
 	shared_ptr<Md::MdT> mdt;
 	shared_ptr<Md::MdA> mda;
 
-	Ex3() : tick(0) {
+	Ex3() {
 		scene = const_cast<aiScene *>(aiImportFile("C:\\Users\\Andrej\\Documents\\BlendTmp\\t02_Bone.dae", 0));
 		assert(scene);
 
@@ -1103,6 +1104,8 @@ struct Ex3 : public ExBase {
 	}
 
 	void Display() {
+		ExBase::Display();
+
 		vector<oglplus::Mat4f> onlyTrafo = nodeMap->GetOnlyTrafo();
 		vector<oglplus::Mat4f> updTrafo = onlyTrafo;
 		vector<oglplus::Mat4f> accTrafo;
@@ -1120,7 +1123,6 @@ struct Ex3 : public ExBase {
 			CamMatrixf::PerspectiveX(Degrees(90), GLfloat(G_WIN_W)/G_WIN_H, 1, 30),
 			CamMatrixf::Orbiting(oglplus::Vec3f(0, 0, 0), 3, Degrees(float(tick * 5)), Degrees(15)),
 			magicTrafo);
-		tick++;
 
 		shd.Prime(*mdd, *mdt, *mda);
 		shd.Draw();
