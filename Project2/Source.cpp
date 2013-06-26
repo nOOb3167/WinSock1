@@ -178,6 +178,30 @@ bool MatSimilar3(const aiMatrix3x3 &a, const aiMatrix3x3 &b) {
 	else return false;
 }
 
+oglplus::Mat4f MatFromSca(const oglplus::Vec3f &s) {
+	return oglplus::Mat4f(
+		s[0], 0, 0, 0,
+		0, s[1], 0, 0,
+		0, 0, s[2], 0,
+		0, 0, 0, 1);
+}
+
+oglplus::Mat4f MatFromRot(const oglplus::Mat3f &r) {
+	return oglplus::Mat4f(
+		r.At(0,0), r.At(0,1), r.At(0,2), 0,
+		r.At(1,0), r.At(1,1), r.At(1,2), 0,
+		r.At(2,0), r.At(2,1), r.At(2,2), 0,
+		0, 0, 0, 1);
+}
+
+oglplus::Mat4f MatFromPos(const oglplus::Vec3f &p) {
+	return oglplus::Mat4f(
+		1, 0, 0, p[0],
+		0, 1, 0, p[1],
+		0, 0, 1, p[2],
+		0, 0, 0, 1);
+}
+
 oglplus::Mat4f MatOglplusFromAi(const aiMatrix4x4 &m) {
 	return oglplus::Mat4f(
 		m.a1, m.a2, m.a3, m.a4,
@@ -398,7 +422,18 @@ public:
 		id(id),
 		null(null) {}
 
+	bool IsNull() const {
+		return null;
+	}
+
+private:
+	void SetNull() {
+		null = true;
+	}
+
 	friend class NodeMap;
+	friend oglplus::Mat4f ChainWalkTrafo      (const NodeMap &nodeMap, const vector<oglplus::Mat4f> &ot, size_t initial);
+	friend void           TrafoUpdateFromAnim (const AnimData &ad, const NodeMap &nodeMap, vector<oglplus::Mat4f> *upd, int frame);
 };
 
 class MeshNode {
@@ -408,9 +443,12 @@ public:
 	NodeMapEntry parent;
 	vector<NodeMapEntry> children;
 
+	oglplus::Mat4f trafo;
+
 	MeshNode(const aiNode &node, const int &ownId) :
 		name(node.mName.C_Str(), ownId),
-		parent("INVALID_NAME", -1)
+		parent("INVALID_NAME", -1),
+		trafo(MatOglplusFromAi(node.mTransformation))
 	{
 		if (node.mParent != nullptr)
 			parent = NodeMapEntry(node.mParent->mName.C_Str(), -1);
@@ -420,13 +458,31 @@ public:
 	}
 };
 
+/**
+* Extract and hold the node hierarchy from an aiNode.
+* vecNodes: First element is the apex. Its 'name' entry is marked as 'null' (Terminator)
+*
+* The apex does not participate in Chain Accumulation or forming of the OffsetMatrix.
+* (This resulted in convention change (Originally the apex nodes' 'parent' entry was 'null'))
+*
+* = Examples =
+* Chain: (Scene)(Blah)(Mesh)
+*   Accumulation: (Blah)*(Cube)
+*       Notice the Scene terminator node not being multiplied-in.
+* Chain: (Scene)(Blah2)(Bone)
+*   OffsetMatrix: (Mesh^-1)*(Blah2^-1)*(Blah)*(Cube)
+*       No Scene again.
+*/
 class NodeMap {
+public:
 	typedef map<string, shared_ptr<MeshNode> > mapNodes_t;
 	typedef vector<shared_ptr<MeshNode> > vecNodes_t;
+private:
 	mapNodes_t mapNodes;
 	vecNodes_t vecNodes;
 
 public:
+
 	NodeMap(const aiNode &node) {
 		mapNodes_t *mNodes = &mapNodes;
 		vecNodes_t *vNodes = &vecNodes;
@@ -452,12 +508,14 @@ public:
 
 		/* Extra pass: Using node.name lookups, fill the remaining */
 
+		/* The first node is marked as terminator / null */
+		if (vNodes->size())
+			(*(*vNodes)[0]).name.SetNull();
+
 		for (size_t i = 0; i < vNodes->size(); i++) {
 			MeshNode &mn = *(*vNodes)[i];
 
-			if (i == 0)
-				mn.parent = NodeMapEntry(mn.parent.name, mn.parent.id, true);
-			else
+			if (!mn.name.IsNull())
 				mn.parent = NodeMapEntry(GetRefByName(mn.parent.name).name); /* FIXME: Copyconstructed */
 
 			for (auto &j : mn.children) {
@@ -467,16 +525,75 @@ public:
 		}
 	}
 
-	MeshNode & GetRefByName(const string &name) {
+	const vecNodes_t & GetRefNodes() const {
+		return vecNodes;
+	}
+
+	const MeshNode & GetRefByNum(const size_t &idx) const {
+		return *vecNodes.at(idx);
+	}
+
+	MeshNode & GetRefByName(const string &name) const {
 		auto it = mapNodes.find(name);
 		assert(it != mapNodes.end());
 		return *it->second;
 	}
 
-	MeshNode & GetRefByEntry(const NodeMapEntry &nme) {
+	MeshNode & GetRefByEntry(const NodeMapEntry &nme) const {
 		return GetRefByName(nme.name);
 	}
+
+	vector<oglplus::Mat4f> GetOnlyTrafo() {
+		vector<oglplus::Mat4f> onlyTrafo;
+
+		for (auto &i : vecNodes)
+			onlyTrafo.push_back(i->trafo);
+
+		return move(onlyTrafo);
+	}
 };
+
+oglplus::Mat4f ChainWalkTrafo(const NodeMap &nodeMap, const vector<oglplus::Mat4f> &ot, size_t initial) {
+	oglplus::Mat4f ret;
+
+	const MeshNode *toProc = &nodeMap.GetRefByNum(initial);
+
+	while (!toProc->name.IsNull()) {
+		ret = ot[toProc->name.id] * ret;
+		toProc = &nodeMap.GetRefByEntry(toProc->parent);
+	}
+
+	return ret;
+}
+
+void TrafoConstructAccumulated(const NodeMap &nodeMap, const vector<oglplus::Mat4f> &ot, vector<oglplus::Mat4f> *upd) {
+	assert(nodeMap.GetRefNodes().size() == ot.size());
+	assert(upd->empty());
+
+	for (size_t i = 0; i < ot.size(); i++) {
+		upd->push_back(ChainWalkTrafo(nodeMap, ot, i));
+	}
+}
+
+void TrafoUpdateFromAnim(const AnimData &ad, const NodeMap &nodeMap, vector<oglplus::Mat4f> *upd, int frame) {
+	assert(nodeMap.GetRefNodes().size() == upd->size());
+
+	for (auto &i : ad.chan) {
+		size_t toProc = nodeMap.GetRefByName(i.nameAffected).name.id;
+
+		assert(toProc < upd->size());
+		assert(frame >= 0 && (int)i.keyPos.size() > frame && (int)i.keyRot.size() > frame && (int)i.keySca.size() > frame);
+
+		oglplus::Mat4f w;
+
+		/* Really should just be doing: |r[:,0]*s[0] r[:,1]*s[1] r[:,2]*s[2] p[:]| <cat> |0 0 0 1| */
+		w = MatFromSca(i.keySca[frame]) * w;
+		w = MatFromRot(i.keyRot[frame]) * w;
+		w = MatFromPos(i.keyPos[frame]) * w;
+
+		upd->at(toProc) = w;
+	}
+}
 
 AnimData AnimExtract(const aiScene &s, const aiAnimation &an) {
 	return AnimData(an);
@@ -889,6 +1006,12 @@ struct Ex3 : public ExBase {
 		MeshData md = MeshExtract(s, m);
 		MeshDataAnim mda = MeshExtractAnim(s, m);
 		AnimData ad = AnimExtract(s, *s.mAnimations[0]);
+
+		vector<oglplus::Mat4f> onlyTrafo = nm.GetOnlyTrafo();
+		vector<oglplus::Mat4f> updTrafo = onlyTrafo;
+		vector<oglplus::Mat4f> accTrafo;
+		TrafoUpdateFromAnim(ad, nm, &updTrafo, 1);
+		TrafoConstructAccumulated(nm, updTrafo, &accTrafo);
 	}
 
 	void Display() {
