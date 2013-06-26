@@ -1130,6 +1130,86 @@ struct Ex3 : public ExBase {
 	}
 };
 
+struct Ex4 : public ExBase {
+	aiScene *scene;
+
+	shared_ptr<Texture> tex;
+
+	shared_ptr<NodeMap> nodeMap;
+	shared_ptr<AnimData> animData;
+
+	Md::ShdTexBone shd;
+	shared_ptr<Md::MdD> mdd;
+	shared_ptr<Md::MdT> mdt;
+	shared_ptr<Md::MdA> mda;
+
+	Ex4() {
+		scene = const_cast<aiScene *>(aiImportFile("C:\\Users\\Andrej\\Documents\\BlendTmp\\t03_BoneTwo.dae", 0));
+		assert(scene);
+
+		aiScene &s = *scene;
+		aiMesh &m = *s.mMeshes[0];
+
+		CheckUniqueNodeNames(s);
+		assert(s.mNumMeshes == 1);
+		CheckOrientPlaceMesh(m);
+
+		CheckFindNode(*s.mRootNode, "Cube");
+		CheckFindNode(*s.mRootNode, "Armature");
+		CheckFindNode(*s.mRootNode, "Bone");
+		CheckFindNode(*s.mRootNode, "Bone2");
+
+		tex = shared_ptr<Texture>(CreateTexture("C:\\Users\\Andrej\\Documents\\BlendTmp\\bTest01.bmp"));
+
+		nodeMap = shared_ptr<NodeMap>(new NodeMap(NodeMapExtract(s, CheckFindNode(*s.mRootNode, "Scene"))));
+		animData = shared_ptr<AnimData>(new AnimData(AnimExtract(s, *s.mAnimations[0])));
+
+		//TODO: Convert to mda
+		//MeshDataAnim mda = MeshExtractAnim(s, m);
+
+		mdd = make_shared<Md::MdD>(MeshExtract(s, m), tex);
+		mdt = make_shared<Md::MdT>(
+			CamMatrixf::PerspectiveX(Degrees(90), GLfloat(G_WIN_W)/G_WIN_H, 1, 30),
+			CamMatrixf::CameraMatrix(),
+			ModelMatrixf());
+	}
+
+	void Display() {
+		ExBase::Display();
+
+		vector<oglplus::Mat4f> onlyTrafo = nodeMap->GetOnlyTrafo();
+		vector<oglplus::Mat4f> updTrafo = onlyTrafo;
+		vector<oglplus::Mat4f> accTrafo;
+		TrafoUpdateFromAnim(*animData, *nodeMap, &updTrafo, (tick % 10) < 5);
+		TrafoConstructAccumulated(*nodeMap, updTrafo, &accTrafo);
+
+		MeshData newMd = MeshExtract(*scene, *scene->mMeshes[0]);
+		const MeshNode &nodeCube = nodeMap->GetRefByName("Cube");
+		const MeshNode &nodeBone = nodeMap->GetRefByName("Bone");
+		const MeshNode &nodeBone2 = nodeMap->GetRefByName("Bone2");
+		MeshDataAnim dataAnim = MeshExtractAnim(*scene, *scene->mMeshes[0]);
+		assert(dataAnim.bone.at(0) == "Bone");
+		assert(dataAnim.bone.at(1) == "Bone2");
+		oglplus::Mat4f magicTrafo = accTrafo[nodeBone.name.GetId()] * dataAnim.offsetMatrix[0];
+		oglplus::Mat4f magicTrafo2 = accTrafo[nodeBone2.name.GetId()] * dataAnim.offsetMatrix[1];
+
+		for (size_t i = 0; i < newMd.vt.size(); i++) {
+			oglplus::Vec4f basePos(newMd.vt[i], 1);
+			oglplus::Vec4f defoPos = dataAnim.weight[i][0] * (magicTrafo * basePos) + dataAnim.weight[i][1] * (magicTrafo2 * basePos);
+			newMd.vt[i] = oglplus::Vec3f(defoPos[0], defoPos[1], defoPos[2]); /* FIXME: Divide by defoPos[3] I guess */
+		}
+
+		mdd = make_shared<Md::MdD>(newMd, tex);
+		mdt = make_shared<Md::MdT>(
+			CamMatrixf::PerspectiveX(Degrees(90), GLfloat(G_WIN_W)/G_WIN_H, 1, 30),
+			CamMatrixf::Orbiting(oglplus::Vec3f(0, 0, 0), 3, Degrees(float(tick * 5)), Degrees(15)),
+			magicTrafo);
+
+		shd.Prime(*mdd, *mdt, *mda);
+		shd.Draw();
+		shd.UnPrime();
+	}
+};
 
 void timerfunc(int msecTime) {
 	glutPostRedisplay();
@@ -1190,7 +1270,8 @@ int main(int argc, char **argv) {
 
 	//RunExample<Ex1>(argc, argv);
 	//RunExample<Ex2>(argc, argv);
-	RunExample<Ex3>(argc, argv);
+	//RunExample<Ex3>(argc, argv);
+	RunExample<Ex4>(argc, argv);
 
 	return EXIT_SUCCESS;
 }
