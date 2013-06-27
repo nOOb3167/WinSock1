@@ -22,8 +22,8 @@
 
 #define G_MAX_BONES_INFLUENCING 4
 
-using namespace std;
 using namespace oglplus;
+using namespace std;
 
 class Ctx : public oglplus::Context {};
 
@@ -151,6 +151,11 @@ struct ExBase {
 	virtual ~ExBase() {};
 	virtual void Display() { tick++; };
 };
+
+bool ScaZero(float a) {
+	const float delta = 0.001f;
+	return (std::fabsf(a) < delta);
+}
 
 bool VecSimilar(const aiVector3D &a, const aiVector3D &b) {
 	const float delta = 0.001f;
@@ -410,12 +415,12 @@ struct WeightData {
 		idWeight(move(rhs.idWeight)),
 		wtWeight(move(rhs.wtWeight)) {}
 
-	size_t & GetRefIdAt(size_t v, size_t b) {
+	size_t & GetRefIdAt(size_t v, size_t b) const {
 		assert(v < numVert && b < numBone);
 		return idWeight[(v * numBone) + b];
 	}
 
-	float & GetRefWtAt(size_t v, size_t b) {
+	float & GetRefWtAt(size_t v, size_t b) const {
 		assert(v < numVert && b < numBone);
 		return wtWeight[(v * numBone) + b];
 	}
@@ -424,18 +429,40 @@ private:
 	WeightData & operator =(const WeightData &rhs);
 };
 
+void WeightFullCompactTo(size_t maxInfluencing, const WeightData &weightFull, WeightData *weight) {
+	assert(maxInfluencing == weight->numBone); /* '<' should be find too */
+
+	for (size_t i = 0; i < weightFull.numVert; i++) {
+		size_t curInf = 0;
+		for (size_t j = 0; j < weightFull.numBone; j++) {
+			if (curInf == maxInfluencing)
+				break;
+
+			/* FIXME: floating point comparison */
+			if (weightFull.GetRefWtAt(i, j) != 0.0f) {
+				weight->GetRefIdAt(i, curInf) = weightFull.GetRefIdAt(i, j);
+				weight->GetRefWtAt(i, curInf) = weightFull.GetRefWtAt(i, j);
+				curInf++;
+			}
+		}
+	}
+}
+
 struct MeshDataAnim {
 	vector<string> bone;
 	vector<oglplus::Mat4f> offsetMatrix;
 	WeightData weight;
+	WeightData weightFull;
 
-	MeshDataAnim(const vector<string> &bone, const vector<oglplus::Mat4f> &offsetMatrix, WeightData &weight) :
+	MeshDataAnim(const vector<string> &bone, const vector<oglplus::Mat4f> &offsetMatrix, const WeightData &weightFull) :
 		bone(bone),
 		offsetMatrix(offsetMatrix),
-		weight(move(weight))
+		weight(weightFull.numVert, G_MAX_BONES_INFLUENCING),
+		weightFull(weightFull)
 	{
 		assert(bone.size() == offsetMatrix.size());
-		/* FIXME: Maybe also check weights being zero or summing to 1.0 */
+
+		WeightFullCompactTo(G_MAX_BONES_INFLUENCING, this->weightFull, &weight);
 	}
 };
 
@@ -1261,27 +1288,66 @@ struct Ex4 : public ExBase {
 	void Display() {
 		ExBase::Display();
 
+		MeshData newMd = MeshExtract(*scene, *scene->mMeshes[0]);
+		MeshDataAnim dataAnim = MeshExtractAnim(*scene, *scene->mMeshes[0], *nodeMap);
+		vector<int> boneId = MeshExtractAnimMapNameId(*nodeMap, dataAnim.bone);
+
 		vector<oglplus::Mat4f> onlyTrafo = nodeMap->GetOnlyTrafo();
 		vector<oglplus::Mat4f> updTrafo = onlyTrafo;
 		vector<oglplus::Mat4f> accTrafo;
 		TrafoUpdateFromAnim(*animData, *nodeMap, &updTrafo, (tick % 10) < 5);
 		TrafoConstructAccumulated(*nodeMap, updTrafo, &accTrafo);
 
-		MeshData newMd = MeshExtract(*scene, *scene->mMeshes[0]);
-		const MeshNode &nodeCube = nodeMap->GetRefByName("Cube");
-		const MeshNode &nodeBone = nodeMap->GetRefByName("Bone");
-		const MeshNode &nodeBone2 = nodeMap->GetRefByName("Bone2");
-		MeshDataAnim dataAnim = MeshExtractAnim(*scene, *scene->mMeshes[0], *nodeMap);
-		assert(dataAnim.bone.at(0) == "Bone");
-		assert(dataAnim.bone.at(1) == "Bone2");
-		oglplus::Mat4f magicTrafo = accTrafo[nodeBone.name.GetId()] * dataAnim.offsetMatrix[0];
-		oglplus::Mat4f magicTrafo2 = accTrafo[nodeBone2.name.GetId()] * dataAnim.offsetMatrix[1];
+		//vector<oglplus::Mat4f> magicTrafo;
+		//for (size_t i = 0; i < boneId.size(); i++)
+		//	magicTrafo.push_back(accTrafo[boneId[i]] * dataAnim.offsetMatrix[boneId[i]]);
 
+		//Do I need a freaking indirection? offsetMatrix is random stuff as far as I can tell
+		// -> Mind difference animData, dataAnim
+		// Will only need bones mentioned in the mesh's MeshDataAnim. [CHECKED]
+		//   -> Is this true? Check to ensure only MeshDataAnim-mentioned Ids are in a 'weight' member. [CHECKED]
+		// In hwshader, probably just calculate a full (All nodes) magicTrafo.
+
+		//MeshDataAnim.bone "Bone"
+		//boneId            3
+		//magicTrafo        trafo
+
+		vector<oglplus::Mat4f> magicTrafo;
+		for (size_t i = 0; i < boneId.size(); i++)
+			magicTrafo.push_back(accTrafo[boneId[i]] * dataAnim.offsetMatrix[i]);
+
+		//dataAnim.weight.GetRefIdAt(i, j)
 		for (size_t i = 0; i < newMd.vt.size(); i++) {
 			oglplus::Vec4f basePos(newMd.vt[i], 1);
-			oglplus::Vec4f defoPos = dataAnim.weight.GetRefWtAt(i, 0) * (magicTrafo * basePos) + dataAnim.weight.GetRefWtAt(i, 1) * (magicTrafo2 * basePos);
+			oglplus::Vec4f defoPos(0, 0, 0, 1);
+			for (size_t j = 0; j < dataAnim.weight.numBone; j++) {
+				if (!ScaZero(dataAnim.weight.GetRefWtAt(i, j)))
+					defoPos += dataAnim.weight.GetRefWtAt(i, j) * (magicTrafo[j] * basePos);
+			}
 			newMd.vt[i] = oglplus::Vec3f(defoPos[0], defoPos[1], defoPos[2]); /* FIXME: Divide by defoPos[3] I guess */
 		}
+
+		//vector<oglplus::Mat4f> onlyTrafo = nodeMap->GetOnlyTrafo();
+		//vector<oglplus::Mat4f> updTrafo = onlyTrafo;
+		//vector<oglplus::Mat4f> accTrafo;
+		//TrafoUpdateFromAnim(*animData, *nodeMap, &updTrafo, (tick % 10) < 5);
+		//TrafoConstructAccumulated(*nodeMap, updTrafo, &accTrafo);
+
+		//MeshData newMd = MeshExtract(*scene, *scene->mMeshes[0]);
+		//const MeshNode &nodeCube = nodeMap->GetRefByName("Cube");
+		//const MeshNode &nodeBone = nodeMap->GetRefByName("Bone");
+		//const MeshNode &nodeBone2 = nodeMap->GetRefByName("Bone2");
+		//MeshDataAnim dataAnim = MeshExtractAnim(*scene, *scene->mMeshes[0], *nodeMap);
+		//assert(dataAnim.bone.at(0) == "Bone");
+		//assert(dataAnim.bone.at(1) == "Bone2");
+		//oglplus::Mat4f magicTrafo = accTrafo[nodeBone.name.GetId()] * dataAnim.offsetMatrix[0];
+		//oglplus::Mat4f magicTrafo2 = accTrafo[nodeBone2.name.GetId()] * dataAnim.offsetMatrix[1];
+
+		//for (size_t i = 0; i < newMd.vt.size(); i++) {
+		//	oglplus::Vec4f basePos(newMd.vt[i], 1);
+		//	oglplus::Vec4f defoPos = dataAnim.weight.GetRefWtAt(i, 0) * (magicTrafo * basePos) + dataAnim.weight.GetRefWtAt(i, 1) * (magicTrafo2 * basePos);
+		//	newMd.vt[i] = oglplus::Vec3f(defoPos[0], defoPos[1], defoPos[2]); /* FIXME: Divide by defoPos[3] I guess */
+		//}
 
 		mdd = make_shared<Md::MdD>(newMd, tex);
 		mdt = make_shared<Md::MdT>(
