@@ -1203,7 +1203,7 @@ struct Ex4 : public ExBase {
 		mdt = make_shared<Md::MdT>(
 			CamMatrixf::PerspectiveX(Degrees(90), GLfloat(G_WIN_W)/G_WIN_H, 1, 30),
 			CamMatrixf::Orbiting(oglplus::Vec3f(0, 0, 0), 3, Degrees(float(tick * 5)), Degrees(15)),
-			magicTrafo);
+			ModelMatrixf());
 
 		shd.Prime(*mdd, *mdt, *mda);
 		shd.Draw();
