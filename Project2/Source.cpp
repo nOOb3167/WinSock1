@@ -690,7 +690,7 @@ void TrafoUpdateFromAnim(const AnimData &ad, const NodeMap &nodeMap, vector<oglp
 	}
 }
 
-AnimData AnimExtract(const aiScene &s, const aiAnimation &an) {
+AnimData ExtractAnim(const aiScene &s, const aiAnimation &an) {
 	return AnimData(an);
 }
 
@@ -698,7 +698,7 @@ NodeMap NodeMapExtract(const aiScene &s, const aiNode &from) {
 	return NodeMap(from);
 }
 
-void MeshExtractAnimAllPairs(const aiMesh &m, vector<vector<WeightPair> > *allPairsOut) {
+void ExtractMeshAnimAllPairs(const aiMesh &m, vector<vector<WeightPair> > *allPairsOut) {
 	const int numVert = m.mNumVertices;
 	const int numBone = m.mNumBones;
 
@@ -743,7 +743,7 @@ void MeshExtractAnimAllPairs(const aiMesh &m, vector<vector<WeightPair> > *allPa
 	*allPairsOut = move(allPairs);
 }
 
-vector<int> MeshExtractAnimMapNameId(const NodeMap &nodeMap, const vector<string> &boneName) {
+vector<int> ExtractMeshAnimMapNameId(const NodeMap &nodeMap, const vector<string> &boneName) {
 	vector<int> boneToId;
 
 	for (auto &i : boneName)
@@ -752,7 +752,7 @@ vector<int> MeshExtractAnimMapNameId(const NodeMap &nodeMap, const vector<string
 	return move(boneToId);
 }
 
-WeightData MeshExtractAnimWeightData(const aiMesh &m, const vector<int> &boneId) {
+WeightData ExtractMeshAnimWeightData(const aiMesh &m, const vector<int> &boneId) {
 	const int numVert = m.mNumVertices;
 	const int numBone = m.mNumBones;
 
@@ -762,7 +762,7 @@ WeightData MeshExtractAnimWeightData(const aiMesh &m, const vector<int> &boneId)
 
 	vector<vector<WeightPair> > allPairs;
 
-	MeshExtractAnimAllPairs(m, &allPairs);
+	ExtractMeshAnimAllPairs(m, &allPairs);
 
 	/* Construct 'weight' */
 
@@ -777,7 +777,7 @@ WeightData MeshExtractAnimWeightData(const aiMesh &m, const vector<int> &boneId)
 	return move(weight);
 }
 
-MeshDataAnim MeshExtractAnim(const aiScene &s, const aiMesh &m, const NodeMap &nodeMap) {
+MeshDataAnim ExtractMeshAnim(const aiScene &s, const aiMesh &m, const NodeMap &nodeMap) {
 	const int numVert = m.mNumVertices;
 	const int numBone = m.mNumBones;
 
@@ -796,13 +796,13 @@ MeshDataAnim MeshExtractAnim(const aiScene &s, const aiMesh &m, const NodeMap &n
 	for (int i = 0; i < numBone; i++)
 		boneName.push_back(string(m.mBones[i]->mName.C_Str()));
 
-	vector<int> boneId(move(MeshExtractAnimMapNameId(nodeMap, boneName)));
-	WeightData  weight(move(MeshExtractAnimWeightData(m, boneId)));
+	vector<int> boneId(move(ExtractMeshAnimMapNameId(nodeMap, boneName)));
+	WeightData  weight(move(ExtractMeshAnimWeightData(m, boneId)));
 
 	return move(MeshDataAnim(move(boneName), move(offsetMatrix), move(weight)));
 }
 
-MeshData MeshExtract(const aiScene &s, const aiMesh &m) {
+MeshData ExtractMesh(const aiScene &s, const aiMesh &m) {
 	vector<oglplus::Vec3f> vt;
 	vector<oglplus::Vec2f> uv;
 	vector<GLuint> id;
@@ -1156,7 +1156,7 @@ struct Ex2 : public ExBase {
 
 		CheckOrientPlace(s);
 
-		mdd = make_shared<Md::MdD>(MeshExtract(s, m), shared_ptr<Texture>(CreateTexture("C:\\Users\\Andrej\\Documents\\BlendTmp\\bTest01.bmp")));
+		mdd = make_shared<Md::MdD>(ExtractMesh(s, m), shared_ptr<Texture>(CreateTexture("C:\\Users\\Andrej\\Documents\\BlendTmp\\bTest01.bmp")));
 		mdt = make_shared<Md::MdT>(
 			CamMatrixf::PerspectiveX(Degrees(90), GLfloat(G_WIN_W)/G_WIN_H, 1, 30),
 			CamMatrixf::CameraMatrix(),
@@ -1202,12 +1202,12 @@ struct Ex3 : public ExBase {
 		tex = shared_ptr<Texture>(CreateTexture("C:\\Users\\Andrej\\Documents\\BlendTmp\\bTest01.bmp"));
 
 		nodeMap = shared_ptr<NodeMap>(new NodeMap(NodeMapExtract(s, CheckFindNode(*s.mRootNode, "Scene"))));
-		animData = shared_ptr<AnimData>(new AnimData(AnimExtract(s, *s.mAnimations[0])));
+		animData = shared_ptr<AnimData>(new AnimData(ExtractAnim(s, *s.mAnimations[0])));
 
 		//TODO: Convert to mda
 		//MeshDataAnim mda = MeshExtractAnim(s, m);
 
-		mdd = make_shared<Md::MdD>(MeshExtract(s, m), tex);
+		mdd = make_shared<Md::MdD>(ExtractMesh(s, m), tex);
 		mdt = make_shared<Md::MdT>(
 			CamMatrixf::PerspectiveX(Degrees(90), GLfloat(G_WIN_W)/G_WIN_H, 1, 30),
 			CamMatrixf::CameraMatrix(),
@@ -1223,10 +1223,10 @@ struct Ex3 : public ExBase {
 		TrafoUpdateFromAnim(*animData, *nodeMap, &updTrafo, (tick % 10) < 5);
 		TrafoConstructAccumulated(*nodeMap, updTrafo, &accTrafo);
 
-		MeshData newMd = MeshExtract(*scene, *scene->mMeshes[0]);
+		MeshData newMd = ExtractMesh(*scene, *scene->mMeshes[0]);
 		const MeshNode &nodeCube = nodeMap->GetRefByName("Cube");
 		const MeshNode &nodeBone = nodeMap->GetRefByName("Bone");
-		MeshDataAnim dataAnim = MeshExtractAnim(*scene, *scene->mMeshes[0], *nodeMap);
+		MeshDataAnim dataAnim = ExtractMeshAnim(*scene, *scene->mMeshes[0], *nodeMap);
 		assert(dataAnim.bone.at(0) == "Bone");
 		oglplus::Mat4f magicTrafo = accTrafo[nodeBone.name.GetId()] * dataAnim.offsetMatrix[0];
 
@@ -1273,12 +1273,12 @@ struct Ex4 : public ExBase {
 		tex = shared_ptr<Texture>(CreateTexture("C:\\Users\\Andrej\\Documents\\BlendTmp\\bTest01.bmp"));
 
 		nodeMap = shared_ptr<NodeMap>(new NodeMap(NodeMapExtract(s, CheckFindNode(*s.mRootNode, "Scene"))));
-		animData = shared_ptr<AnimData>(new AnimData(AnimExtract(s, *s.mAnimations[0])));
+		animData = shared_ptr<AnimData>(new AnimData(ExtractAnim(s, *s.mAnimations[0])));
 
 		//TODO: Convert to mda
 		//MeshDataAnim mda = MeshExtractAnim(s, m);
 
-		mdd = make_shared<Md::MdD>(MeshExtract(s, m), tex);
+		mdd = make_shared<Md::MdD>(ExtractMesh(s, m), tex);
 		mdt = make_shared<Md::MdT>(
 			CamMatrixf::PerspectiveX(Degrees(90), GLfloat(G_WIN_W)/G_WIN_H, 1, 30),
 			CamMatrixf::CameraMatrix(),
@@ -1288,9 +1288,9 @@ struct Ex4 : public ExBase {
 	void Display() {
 		ExBase::Display();
 
-		MeshData newMd = MeshExtract(*scene, *scene->mMeshes[0]);
-		MeshDataAnim dataAnim = MeshExtractAnim(*scene, *scene->mMeshes[0], *nodeMap);
-		vector<int> boneId = MeshExtractAnimMapNameId(*nodeMap, dataAnim.bone);
+		MeshData newMd = ExtractMesh(*scene, *scene->mMeshes[0]);
+		MeshDataAnim dataAnim = ExtractMeshAnim(*scene, *scene->mMeshes[0], *nodeMap);
+		vector<int> boneId = ExtractMeshAnimMapNameId(*nodeMap, dataAnim.bone);
 
 		vector<oglplus::Mat4f> onlyTrafo = nodeMap->GetOnlyTrafo();
 		vector<oglplus::Mat4f> updTrafo = onlyTrafo;
