@@ -1144,7 +1144,7 @@ struct Ex4 : public ExBase {
 	shared_ptr<Md::MdA> mda;
 
 	Ex4() {
-		scene = const_cast<aiScene *>(aiImportFile("C:\\Users\\Andrej\\Documents\\BlendTmp\\t03_BoneTwo.dae", 0));
+		scene = const_cast<aiScene *>(aiImportFile("C:\\Users\\Andrej\\Documents\\BlendTmp\\t03_BoneTwo.dae", aiProcess_LimitBoneWeights | aiProcess_ValidateDataStructure));
 		assert(scene);
 
 		aiScene &s = *scene;
