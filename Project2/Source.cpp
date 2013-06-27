@@ -364,13 +364,75 @@ struct MeshData {
 	}
 };
 
+struct WeightPair {
+	unsigned int vertexId;
+	float weight;
+
+	WeightPair(unsigned int vertexId, float weight) :
+		vertexId(vertexId),
+		weight(weight) {}
+};
+
+struct WeightData {
+	size_t numVert;
+	size_t numBone;
+	unique_ptr<size_t[]> idWeight;
+	unique_ptr<float[]> wtWeight;
+
+	WeightData(size_t numVert, size_t numBone) :
+		numVert(numVert),
+		numBone(numBone),
+		idWeight(new size_t[numVert * numBone]),
+		wtWeight(new float[numVert * numBone])
+	{
+		for (size_t i = 0; i < numVert * numBone; i++) {
+			idWeight[i] = 0;
+			wtWeight[i] = 0.0f;
+		}
+	}
+
+	WeightData(const WeightData &rhs) :
+		numVert(rhs.numVert),
+		numBone(rhs.numBone),
+		idWeight(new size_t[numVert * numBone]),
+		wtWeight(new float[numVert * numBone])
+	{
+		for (size_t i = 0; i < numVert * numBone; i++) {
+			idWeight[i] = rhs.idWeight[i];
+			wtWeight[i] = rhs.wtWeight[i];
+		}
+	}
+
+	
+	WeightData(WeightData &&rhs) :
+		numVert(rhs.numVert),
+		numBone(rhs.numBone),
+		idWeight(move(rhs.idWeight)),
+		wtWeight(move(rhs.wtWeight)) {}
+
+	size_t & GetRefIdAt(size_t v, size_t b) {
+		assert(v < numVert && b < numBone);
+		return idWeight[(v * numBone) + b];
+	}
+
+	float & GetRefWtAt(size_t v, size_t b) {
+		assert(v < numVert && b < numBone);
+		return wtWeight[(v * numBone) + b];
+	}
+
+private:
+	WeightData & operator =(const WeightData &rhs);
+};
+
 struct MeshDataAnim {
 	vector<string> bone;
 	vector<oglplus::Mat4f> offsetMatrix;
-	vector<array<float, G_MAX_BONES_INFLUENCING> > weight;
+	WeightData weight;
 
-	MeshDataAnim(const vector<string> &bone, const vector<oglplus::Mat4f> &offsetMatrix, vector<array<float, G_MAX_BONES_INFLUENCING> > &weight) :
-		bone(bone), offsetMatrix(offsetMatrix), weight(weight)
+	MeshDataAnim(const vector<string> &bone, const vector<oglplus::Mat4f> &offsetMatrix, WeightData &weight) :
+		bone(bone),
+		offsetMatrix(offsetMatrix),
+		weight(move(weight))
 	{
 		assert(bone.size() == offsetMatrix.size());
 		/* FIXME: Maybe also check weights being zero or summing to 1.0 */
@@ -609,37 +671,9 @@ NodeMap NodeMapExtract(const aiScene &s, const aiNode &from) {
 	return NodeMap(from);
 }
 
-MeshDataAnim MeshExtractAnim(const aiScene &s, const aiMesh &m) {
-
-	assert(m.mNumBones <= G_MAX_BONES_INFLUENCING);
-
-	const int numBone = m.mNumBones;
+void MeshExtractAnimAllPairs(const aiMesh &m, vector<vector<WeightPair> > *allPairsOut) {
 	const int numVert = m.mNumVertices;
-
-	array<float, G_MAX_BONES_INFLUENCING> emPty;
-	for (size_t i = 0; i < emPty.size(); i++) emPty[i] = 0.0;
-
-	vector<string> bone;
-	vector<oglplus::Mat4f> offsetMatrix;
-	vector<array<float, G_MAX_BONES_INFLUENCING> > weight(numVert, emPty);
-
-	for (int i = 0; i < numBone; i++)
-		CheckFindNode(*s.mRootNode, m.mBones[i]->mName.C_Str());
-
-	/* Construct 'bone' and 'offsetMatrix' */
-
-	for (int i = 0; i < numBone; i++) {
-		bone.push_back(string(m.mBones[i]->mName.C_Str()));
-		offsetMatrix.push_back(MatOglplusFromAi(m.mBones[i]->mOffsetMatrix));
-	}
-
-	/* Prepare to construct 'weight' - Get the required data into a more suitable format first */
-
-	struct WeightPair {
-		unsigned int vertexId;
-		float weight;
-		WeightPair(unsigned int vertexId, float weight) : vertexId(vertexId), weight(weight) {}
-	};
+	const int numBone = m.mNumBones;
 
 	vector<vector<WeightPair> > allPairs;
 
@@ -652,14 +686,14 @@ MeshDataAnim MeshExtractAnim(const aiScene &s, const aiMesh &m) {
 		sort(wp.begin(), wp.end(), [](const WeightPair &a, const WeightPair &b) { return a.vertexId < b.vertexId; });
 
 		vector<bool> present(numVert, false);
-		for (size_t j = 0; j < wp.size(); j++)
-			present.at(wp[j].vertexId) = true;
+		for (auto &i : wp)
+			present.at(i.vertexId) = true;
 
 		/* 'wp' now [id0, ..., idn] ; where an aiWeight with id=idX was present in mWeights */
 		/* 'present' now [bool0,...,booln] ; where true if aiWeight with id=idX was present in mWeights */
 
 		/* To fill out a WeightPair vector where every 'id' from 0 to 'numVert' is present (Thus filling the gaps):
-		Traverse present in order from 0 to numVert.
+		Traverse 'present' in order from 0 to numVert.
 		false -> A gap, fill with a zero default.
 		true  -> An existing weight. Get, then remove from 'wp'.
 		Since the traversal is in order, and previous iterations popped all 'wp' members with a lower 'id',
@@ -679,16 +713,66 @@ MeshDataAnim MeshExtractAnim(const aiScene &s, const aiMesh &m) {
 		allPairs.push_back(move(wpFull));
 	}
 
+	*allPairsOut = move(allPairs);
+}
+
+vector<int> MeshExtractAnimMapNameId(const NodeMap &nodeMap, const vector<string> &boneName) {
+	vector<int> boneToId;
+
+	for (auto &i : boneName)
+		boneToId.push_back(nodeMap.GetRefByName(i).name.GetId());
+
+	return move(boneToId);
+}
+
+WeightData MeshExtractAnimWeightData(const aiMesh &m, const vector<int> &boneId) {
+	const int numVert = m.mNumVertices;
+	const int numBone = m.mNumBones;
+
+	WeightData weight(numVert, numBone);
+
+	/* Prepare to construct 'weight' - Get the required data into a more suitable format first */
+
+	vector<vector<WeightPair> > allPairs;
+
+	MeshExtractAnimAllPairs(m, &allPairs);
+
 	/* Construct 'weight' */
 
 	for (int i = 0; i < numVert; i++) {
 		for (int j = 0; j < numBone; j++) {
 			assert(allPairs[j][i].vertexId == i);
-			weight[i][j] = allPairs[j][i].weight;
+			weight.GetRefIdAt(i, j) = boneId[j];
+			weight.GetRefWtAt(i, j) = allPairs[j][i].weight;
 		}
 	}
 
-	return MeshDataAnim(move(bone), move(offsetMatrix), move(weight));
+	return move(weight);
+}
+
+MeshDataAnim MeshExtractAnim(const aiScene &s, const aiMesh &m, const NodeMap &nodeMap) {
+	const int numVert = m.mNumVertices;
+	const int numBone = m.mNumBones;
+
+	for (int i = 0; i < numBone; i++) {
+		CheckFindNode(*s.mRootNode, m.mBones[i]->mName.C_Str());
+		nodeMap.GetRefByName(m.mBones[i]->mName.C_Str());
+	}
+
+	vector<oglplus::Mat4f> offsetMatrix;
+
+	for (int i = 0; i < numBone; i++)
+		offsetMatrix.push_back(MatOglplusFromAi(m.mBones[i]->mOffsetMatrix));
+
+	vector<string> boneName;
+
+	for (int i = 0; i < numBone; i++)
+		boneName.push_back(string(m.mBones[i]->mName.C_Str()));
+
+	vector<int> boneId(move(MeshExtractAnimMapNameId(nodeMap, boneName)));
+	WeightData  weight(move(MeshExtractAnimWeightData(m, boneId)));
+
+	return move(MeshDataAnim(move(boneName), move(offsetMatrix), move(weight)));
 }
 
 MeshData MeshExtract(const aiScene &s, const aiMesh &m) {
@@ -1115,7 +1199,7 @@ struct Ex3 : public ExBase {
 		MeshData newMd = MeshExtract(*scene, *scene->mMeshes[0]);
 		const MeshNode &nodeCube = nodeMap->GetRefByName("Cube");
 		const MeshNode &nodeBone = nodeMap->GetRefByName("Bone");
-		MeshDataAnim dataAnim = MeshExtractAnim(*scene, *scene->mMeshes[0]);
+		MeshDataAnim dataAnim = MeshExtractAnim(*scene, *scene->mMeshes[0], *nodeMap);
 		assert(dataAnim.bone.at(0) == "Bone");
 		oglplus::Mat4f magicTrafo = accTrafo[nodeBone.name.GetId()] * dataAnim.offsetMatrix[0];
 
@@ -1187,7 +1271,7 @@ struct Ex4 : public ExBase {
 		const MeshNode &nodeCube = nodeMap->GetRefByName("Cube");
 		const MeshNode &nodeBone = nodeMap->GetRefByName("Bone");
 		const MeshNode &nodeBone2 = nodeMap->GetRefByName("Bone2");
-		MeshDataAnim dataAnim = MeshExtractAnim(*scene, *scene->mMeshes[0]);
+		MeshDataAnim dataAnim = MeshExtractAnim(*scene, *scene->mMeshes[0], *nodeMap);
 		assert(dataAnim.bone.at(0) == "Bone");
 		assert(dataAnim.bone.at(1) == "Bone2");
 		oglplus::Mat4f magicTrafo = accTrafo[nodeBone.name.GetId()] * dataAnim.offsetMatrix[0];
@@ -1195,7 +1279,7 @@ struct Ex4 : public ExBase {
 
 		for (size_t i = 0; i < newMd.vt.size(); i++) {
 			oglplus::Vec4f basePos(newMd.vt[i], 1);
-			oglplus::Vec4f defoPos = dataAnim.weight[i][0] * (magicTrafo * basePos) + dataAnim.weight[i][1] * (magicTrafo2 * basePos);
+			oglplus::Vec4f defoPos = dataAnim.weight.GetRefWtAt(i, 0) * (magicTrafo * basePos) + dataAnim.weight.GetRefWtAt(i, 1) * (magicTrafo2 * basePos);
 			newMd.vt[i] = oglplus::Vec3f(defoPos[0], defoPos[1], defoPos[2]); /* FIXME: Divide by defoPos[3] I guess */
 		}
 
