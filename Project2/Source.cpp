@@ -1298,25 +1298,10 @@ struct Ex4 : public ExBase {
 		TrafoUpdateFromAnim(*animData, *nodeMap, &updTrafo, (tick % 10) < 5);
 		TrafoConstructAccumulated(*nodeMap, updTrafo, &accTrafo);
 
-		//vector<oglplus::Mat4f> magicTrafo;
-		//for (size_t i = 0; i < boneId.size(); i++)
-		//	magicTrafo.push_back(accTrafo[boneId[i]] * dataAnim.offsetMatrix[boneId[i]]);
-
-		//Do I need a freaking indirection? offsetMatrix is random stuff as far as I can tell
-		// -> Mind difference animData, dataAnim
-		// Will only need bones mentioned in the mesh's MeshDataAnim. [CHECKED]
-		//   -> Is this true? Check to ensure only MeshDataAnim-mentioned Ids are in a 'weight' member. [CHECKED]
-		// In hwshader, probably just calculate a full (All nodes) magicTrafo.
-
-		//MeshDataAnim.bone "Bone"
-		//boneId            3
-		//magicTrafo        trafo
-
 		vector<oglplus::Mat4f> magicTrafo;
 		for (size_t i = 0; i < boneId.size(); i++)
 			magicTrafo.push_back(accTrafo[boneId[i]] * dataAnim.offsetMatrix[i]);
 
-		//dataAnim.weight.GetRefIdAt(i, j)
 		for (size_t i = 0; i < newMd.vt.size(); i++) {
 			oglplus::Vec4f basePos(newMd.vt[i], 1);
 			oglplus::Vec4f defoPos(0, 0, 0, 1);
@@ -1326,28 +1311,6 @@ struct Ex4 : public ExBase {
 			}
 			newMd.vt[i] = oglplus::Vec3f(defoPos[0], defoPos[1], defoPos[2]); /* FIXME: Divide by defoPos[3] I guess */
 		}
-
-		//vector<oglplus::Mat4f> onlyTrafo = nodeMap->GetOnlyTrafo();
-		//vector<oglplus::Mat4f> updTrafo = onlyTrafo;
-		//vector<oglplus::Mat4f> accTrafo;
-		//TrafoUpdateFromAnim(*animData, *nodeMap, &updTrafo, (tick % 10) < 5);
-		//TrafoConstructAccumulated(*nodeMap, updTrafo, &accTrafo);
-
-		//MeshData newMd = MeshExtract(*scene, *scene->mMeshes[0]);
-		//const MeshNode &nodeCube = nodeMap->GetRefByName("Cube");
-		//const MeshNode &nodeBone = nodeMap->GetRefByName("Bone");
-		//const MeshNode &nodeBone2 = nodeMap->GetRefByName("Bone2");
-		//MeshDataAnim dataAnim = MeshExtractAnim(*scene, *scene->mMeshes[0], *nodeMap);
-		//assert(dataAnim.bone.at(0) == "Bone");
-		//assert(dataAnim.bone.at(1) == "Bone2");
-		//oglplus::Mat4f magicTrafo = accTrafo[nodeBone.name.GetId()] * dataAnim.offsetMatrix[0];
-		//oglplus::Mat4f magicTrafo2 = accTrafo[nodeBone2.name.GetId()] * dataAnim.offsetMatrix[1];
-
-		//for (size_t i = 0; i < newMd.vt.size(); i++) {
-		//	oglplus::Vec4f basePos(newMd.vt[i], 1);
-		//	oglplus::Vec4f defoPos = dataAnim.weight.GetRefWtAt(i, 0) * (magicTrafo * basePos) + dataAnim.weight.GetRefWtAt(i, 1) * (magicTrafo2 * basePos);
-		//	newMd.vt[i] = oglplus::Vec3f(defoPos[0], defoPos[1], defoPos[2]); /* FIXME: Divide by defoPos[3] I guess */
-		//}
 
 		mdd = make_shared<Md::MdD>(newMd, tex);
 		mdt = make_shared<Md::MdT>(
