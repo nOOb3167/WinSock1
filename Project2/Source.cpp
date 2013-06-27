@@ -4,6 +4,7 @@
 #include <functional>
 #include <algorithm>
 #include <iostream>
+#include <sstream>
 #include <memory>
 #include <vector>
 #include <deque>
@@ -20,6 +21,8 @@
 #define G_WIN_W 800
 #define G_WIN_H 800
 
+/* 640k should be enough for anyone - IIRC GL 3.0 Guarantees 1024 */
+#define G_MAX_BONES_UNIFORM     30
 #define G_MAX_BONES_INFLUENCING 4
 
 using namespace oglplus;
@@ -56,6 +59,12 @@ public:
 		glPixelStorei(GL_UNPACK_ALIGNMENT, alignment);
 	}
 };
+
+::std::string ConvertIntString(int a) {
+	::std::stringstream ss;
+	ss << a;
+	return ss.str();
+}
 
 GLubyte * CreateImageBufRGB(const char *fname, int *w, int *h) {
 	int r;
@@ -322,39 +331,6 @@ struct Ex1 : public ExBase {
 	}
 };
 
-Program * ShaderTexSimple() {
-	VertexShader vs;
-	FragmentShader fs;
-	Program *prog = new Program();
-	vs.Source(
-		"#version 420\n\
-		uniform mat4 ProjectionMatrix, CameraMatrix, ModelMatrix;\
-		in vec4 Position;\
-		in vec2 TexCoord;\
-		out vec2 vTexCoord;\
-		void main(void) {\
-		vTexCoord = TexCoord;\
-		gl_Position = ProjectionMatrix * CameraMatrix * ModelMatrix * Position;\
-		}"
-		);
-	fs.Source(
-		"#version 420\n\
-		uniform sampler2D TexUnit;\
-		in vec2 vTexCoord;\
-		out vec4 fragColor;\
-		void main(void) {\
-		vec4 t = texture(TexUnit, vTexCoord);\
-		fragColor = vec4(t.rgb, 1.0);\
-		}"
-		);
-	vs.Compile();
-	fs.Compile();
-	prog->AttachShader(vs);
-	prog->AttachShader(fs);
-	prog->Link();
-	return prog;
-}
-
 struct MeshData {
 	size_t triCnt;
 
@@ -408,7 +384,7 @@ struct WeightData {
 		}
 	}
 
-	
+
 	WeightData(WeightData &&rhs) :
 		numVert(rhs.numVert),
 		numBone(rhs.numBone),
@@ -906,6 +882,39 @@ namespace Md {
 		void UnPrime();
 	};
 
+	Program * ShaderTexSimple() {
+		VertexShader vs;
+		FragmentShader fs;
+		Program *prog = new Program();
+		vs.Source(
+			"#version 420\n\
+			uniform mat4 ProjectionMatrix, CameraMatrix, ModelMatrix;\
+			in vec4 Position;\
+			in vec2 TexCoord;\
+			out vec2 vTexCoord;\
+			void main(void) {\
+			vTexCoord = TexCoord;\
+			gl_Position = ProjectionMatrix * CameraMatrix * ModelMatrix * Position;\
+			}"
+			);
+		fs.Source(
+			"#version 420\n\
+			uniform sampler2D TexUnit;\
+			in vec2 vTexCoord;\
+			out vec4 fragColor;\
+			void main(void) {\
+			vec4 t = texture(TexUnit, vTexCoord);\
+			fragColor = vec4(t.rgb, 1.0);\
+			}"
+			);
+		vs.Compile();
+		fs.Compile();
+		prog->AttachShader(vs);
+		prog->AttachShader(fs);
+		prog->Link();
+		return prog;
+	}
+
 	class ShdTexSimple : public Shd {
 	public:
 		shared_ptr<Program> prog;
@@ -976,6 +985,51 @@ namespace Md {
 		}
 	};
 
+	Program * ShaderTexBone() {
+		VertexShader vs;
+		FragmentShader fs;
+		Program *prog = new Program();
+
+		string defS("#version 420\n");
+		defS.append("#define MAX_BONES ");      defS.append(ConvertIntString(G_MAX_BONES_UNIFORM)); defS.append("\n");
+		defS.append("#define MAX_BONES_INFL "); defS.append(ConvertIntString(G_MAX_BONES_INFLUENCING)); defS.append("\n");
+
+		string vsSrc(defS);
+		vsSrc.append(
+			"uniform mat4  MagicTrafo[MAX_BONES];"
+			"in      ivec4 IdWeight;"
+			"in      vec4  WtWeight;"
+			"uniform mat4 ProjectionMatrix, CameraMatrix, ModelMatrix;"
+			"in  vec4 Position;"
+			"in  vec2 TexCoord;"
+			"out vec2 vTexCoord;"
+			"void main(void) {"
+			"  vTexCoord = TexCoord;"
+			"  gl_Position = ProjectionMatrix * CameraMatrix * ModelMatrix * Position;"
+			"}"
+			);
+
+		string fsSrc(defS);
+		fsSrc.append(
+			"uniform sampler2D TexUnit;"
+			"in  vec2 vTexCoord;"
+			"out vec4 fragColor;"
+			"void main(void) {"
+			"  vec4 t = texture(TexUnit, vTexCoord);"
+			"  fragColor = vec4(t.rgb, 1.0);"
+			"}"
+			);
+
+		vs.Source(vsSrc);
+		fs.Source(fsSrc);
+		vs.Compile();
+		fs.Compile();
+		prog->AttachShader(vs);
+		prog->AttachShader(fs);
+		prog->Link();
+		return prog;
+	}
+
 	class ShdTexBone : public Shd {
 	public:
 		shared_ptr<Program> prog;
@@ -984,7 +1038,7 @@ namespace Md {
 		size_t triCnt;
 
 		ShdTexBone() :
-			prog(shared_ptr<Program>(ShaderTexSimple())),
+			prog(shared_ptr<Program>(ShaderTexBone())),
 			va(new VertexArray()),
 			triCnt(0) {}
 
@@ -1013,6 +1067,8 @@ namespace Md {
 			ProgramUniform<Mat4f>(*prog, "ProjectionMatrix") = mt.ProjectionMatrix;
 			ProgramUniform<Mat4f>(*prog, "CameraMatrix") = mt.CameraMatrix;
 			ProgramUniform<Mat4f>(*prog, "ModelMatrix") = mt.ModelMatrix;
+
+			OptionalProgramUniform<Mat4f>(*prog, "MagicTrafo[0]") = ModelMatrixf();
 
 			Validate();
 		}
@@ -1249,7 +1305,7 @@ struct Ex4 : public ExBase {
 	shared_ptr<NodeMap> nodeMap;
 	shared_ptr<AnimData> animData;
 
-	Md::ShdTexBone shd;
+	Md::ShdTexSimple shd;
 	shared_ptr<Md::MdD> mdd;
 	shared_ptr<Md::MdT> mdt;
 	shared_ptr<Md::MdA> mda;
@@ -1274,9 +1330,6 @@ struct Ex4 : public ExBase {
 
 		nodeMap = shared_ptr<NodeMap>(new NodeMap(NodeMapExtract(s, CheckFindNode(*s.mRootNode, "Scene"))));
 		animData = shared_ptr<AnimData>(new AnimData(ExtractAnim(s, *s.mAnimations[0])));
-
-		//TODO: Convert to mda
-		//MeshDataAnim mda = MeshExtractAnim(s, m);
 
 		mdd = make_shared<Md::MdD>(ExtractMesh(s, m), tex);
 		mdt = make_shared<Md::MdT>(
@@ -1318,10 +1371,91 @@ struct Ex4 : public ExBase {
 			CamMatrixf::Orbiting(oglplus::Vec3f(0, 0, 0), 3, Degrees(float(tick * 5)), Degrees(15)),
 			ModelMatrixf());
 
+		shd.Prime(*mdd, *mdt);
+		shd.Draw();
+		shd.UnPrime();
+	}
+};
+
+struct Ex5 : public ExBase {
+	aiScene *scene;
+
+	shared_ptr<Texture> tex;
+
+	shared_ptr<NodeMap> nodeMap;
+	shared_ptr<AnimData> animData;
+
+	Md::ShdTexBone shd;
+	shared_ptr<Md::MdD> mdd;
+	shared_ptr<Md::MdT> mdt;
+	shared_ptr<Md::MdA> mda;
+
+	Ex5() {
+		scene = const_cast<aiScene *>(aiImportFile("C:\\Users\\Andrej\\Documents\\BlendTmp\\t03_BoneTwo.dae", aiProcess_LimitBoneWeights | aiProcess_ValidateDataStructure));
+		assert(scene);
+
+		aiScene &s = *scene;
+		aiMesh &m = *s.mMeshes[0];
+
+		CheckUniqueNodeNames(s);
+
+		tex = shared_ptr<Texture>(CreateTexture("C:\\Users\\Andrej\\Documents\\BlendTmp\\bTest01.bmp"));
+
+		nodeMap = shared_ptr<NodeMap>(new NodeMap(NodeMapExtract(s, CheckFindNode(*s.mRootNode, "Scene"))));
+		animData = shared_ptr<AnimData>(new AnimData(ExtractAnim(s, *s.mAnimations[0])));
+	}
+
+	void Display() {
+		ExBase::Display();
+
+		MeshData newMd = ExtractMesh(*scene, *scene->mMeshes[0]);
+		MeshDataAnim dataAnim = ExtractMeshAnim(*scene, *scene->mMeshes[0], *nodeMap);
+		vector<int> boneId = ExtractMeshAnimMapNameId(*nodeMap, dataAnim.bone);
+
+		vector<oglplus::Mat4f> onlyTrafo = nodeMap->GetOnlyTrafo();
+		vector<oglplus::Mat4f> updTrafo = onlyTrafo;
+		vector<oglplus::Mat4f> accTrafo;
+		TrafoUpdateFromAnim(*animData, *nodeMap, &updTrafo, (tick % 10) < 5);
+		TrafoConstructAccumulated(*nodeMap, updTrafo, &accTrafo);
+
+		vector<oglplus::Mat4f> magicTrafo;
+		for (size_t i = 0; i < boneId.size(); i++)
+			magicTrafo.push_back(accTrafo[boneId[i]] * dataAnim.offsetMatrix[i]);
+
+		for (size_t i = 0; i < newMd.vt.size(); i++) {
+			oglplus::Vec4f basePos(newMd.vt[i], 1);
+			oglplus::Vec4f defoPos(0, 0, 0, 1);
+			for (size_t j = 0; j < dataAnim.weight.numBone; j++) {
+				if (!ScaZero(dataAnim.weight.GetRefWtAt(i, j)))
+					defoPos += dataAnim.weight.GetRefWtAt(i, j) * (magicTrafo[j] * basePos);
+			}
+			newMd.vt[i] = oglplus::Vec3f(defoPos[0], defoPos[1], defoPos[2]); /* FIXME: Divide by defoPos[3] I guess */
+		}
+
+		mdd = make_shared<Md::MdD>(newMd, tex);
+		mdt = make_shared<Md::MdT>(
+			CamMatrixf::PerspectiveX(Degrees(90), GLfloat(G_WIN_W)/G_WIN_H, 1, 30),
+			CamMatrixf::Orbiting(oglplus::Vec3f(0, 0, 0), 3, Degrees(float(tick * 5)), Degrees(15)),
+			ModelMatrixf());
+
 		shd.Prime(*mdd, *mdt, *mda);
 		shd.Draw();
 		shd.UnPrime();
 	}
+};
+
+void OglGenErr(oglplus::Error &err) {
+	std::cerr <<
+		"Error (in " << err.GLSymbol() << ", " <<
+		err.ClassName() << ": '" <<
+		err.ObjectDescription() << "'): " <<
+		err.what() <<
+		" [" << err.File() << ":" << err.Line() << "] ";
+	std::cerr << std::endl;
+	auto i = err.Properties().begin(), e = err.Properties().end();
+	for (auto &i : err.Properties())
+		std::cerr << "<" << i.first << "='" << i.second << "'>" << std::endl;
+	err.Cleanup();
 };
 
 void timerfunc(int msecTime) {
@@ -1331,52 +1465,57 @@ void timerfunc(int msecTime) {
 
 template<typename ExType>
 void RunExample(int argc, char **argv) {
-	auto OglGenErr = [](oglplus::Error &err) {
-		std::cerr <<
-			"Error (in " << err.GLSymbol() << ", " <<
-			err.ClassName() << ": '" <<
-			err.ObjectDescription() << "'): " <<
-			err.what() <<
-			" [" << err.File() << ":" << err.Line() << "] ";
-		std::cerr << std::endl;
-		err.Cleanup();
-	};
+	glutInit(&argc, argv);
+	glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA | GLUT_DEPTH);
+	glutInitWindowSize(G_WIN_W, G_WIN_H);
+	glutInitWindowPosition(100, 100);
+	glutInitContextVersion (3,3);
+	glutInitContextProfile (GLUT_CORE_PROFILE);
+	glewExperimental=TRUE;
+	glutCreateWindow("OGLplus");
+	assert (glewInit() == GLEW_OK);
+	glGetError();
 
-	try {
-		glutInit(&argc, argv);
-		glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA | GLUT_DEPTH);
-		glutInitWindowSize(G_WIN_W, G_WIN_H);
-		glutInitWindowPosition(100, 100);
-		glutInitContextVersion (3,3);
-		glutInitContextProfile (GLUT_CORE_PROFILE);
-		glewExperimental=TRUE;
-		glutCreateWindow("OGLplus");
-		assert (glewInit() == GLEW_OK);
-		glGetError();
+	static ExBase *gEx = new ExType();
+	static bool gFailed = false;
 
-		static ExBase *gEx = new ExType();
+	/* Cannot pass exceptions through FreeGlut,
+	have to workaround with error flags and FreeGlut API / Option flags. */
 
-		auto dispfunc = []() {
+	auto dispfunc = []() {
+		bool failed = false;
+
+		try {
 			Ctx::ClearColor(0.2f, 0.2f, 0.2f, 0.0f);
 			Ctx::Clear().ColorBuffer().DepthBuffer();
 
 			gEx->Display();
 
 			glutSwapBuffers();
-		};
+		} catch(oglplus::CompileError &e) {
+			std::cerr << e.Log();
+			OglGenErr(e);
+			failed = true;
+		} catch(oglplus::Error &e) {
+			OglGenErr(e);
+			failed = true;
+		}
 
-		glutDisplayFunc(dispfunc);
-		glutTimerFunc(33, timerfunc, 33);
+		if (failed) {
+			gFailed = true;
+			glutLeaveMainLoop();
+		}
+	};
 
-		glutMainLoop();
-	} catch(oglplus::CompileError &e) {
-		std::cerr << e.Log();
-		OglGenErr(e);
-		throw;
-	} catch(oglplus::Error &e) {
-		OglGenErr(e);
-		throw;
-	}
+	glutDisplayFunc(dispfunc);
+	glutTimerFunc(33, timerfunc, 33);
+
+	glutSetOption(GLUT_ACTION_ON_WINDOW_CLOSE, GLUT_ACTION_GLUTMAINLOOP_RETURNS);
+
+	glutMainLoop();
+
+	if (gFailed)
+		throw exception("Failed");
 }
 
 int main(int argc, char **argv) {
@@ -1384,7 +1523,8 @@ int main(int argc, char **argv) {
 	//RunExample<Ex1>(argc, argv);
 	//RunExample<Ex2>(argc, argv);
 	//RunExample<Ex3>(argc, argv);
-	RunExample<Ex4>(argc, argv);
+	//RunExample<Ex4>(argc, argv);
+	RunExample<Ex5>(argc, argv);
 
 	return EXIT_SUCCESS;
 }
