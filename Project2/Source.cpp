@@ -406,7 +406,7 @@ private:
 };
 
 void WeightFullCompactTo(size_t maxInfluencing, const WeightData &weightFull, WeightData *weight) {
-	assert(maxInfluencing == weight->numBone); /* '<' should be find too */
+	assert(maxInfluencing == weight->numBone); /* '<' should be fine, too */
 
 	for (size_t i = 0; i < weightFull.numVert; i++) {
 		size_t curInf = 0;
@@ -414,7 +414,8 @@ void WeightFullCompactTo(size_t maxInfluencing, const WeightData &weightFull, We
 			if (curInf == maxInfluencing)
 				break;
 
-			/* FIXME: floating point comparison */
+			/* FIXME: floating point comparison.
+			Additionally, may want to pick the highest influence entries. */
 			if (weightFull.GetRefWtAt(i, j) != 0.0f) {
 				weight->GetRefIdAt(i, curInf) = weightFull.GetRefIdAt(i, j);
 				weight->GetRefWtAt(i, curInf) = weightFull.GetRefWtAt(i, j);
