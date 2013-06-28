@@ -615,7 +615,7 @@ public:
 		return GetRefByName(nme.name);
 	}
 
-	vector<oglplus::Mat4f> GetOnlyTrafo() {
+	vector<oglplus::Mat4f> GetOnlyTrafo() const {
 		vector<oglplus::Mat4f> onlyTrafo;
 
 		for (auto &i : vecNodes)
@@ -863,7 +863,56 @@ namespace Md {
 	};
 
 	struct MdA {
+		/*
+		* Mesh
+		*   DataPart (MeshData)
+		*     Vert, Uv, Id, ...
+		*   AnimPart (MeshDataAnim)
+		*     BoneN { boneName, offsetMatrix, ... }
+		* Animation
+		*   AnimData
+		*     Channels, frames
+		*
+		* nodeMap|onlyTrafo,updTrafo,accTrafo
+		* -------|---------------------------
+		* 0      |initial, at current frame, accumulated at current frame
+		* ...    |...
+		*
+		* BoneN|boneId
+		* -----|------
+		* 0    |nodeMap.ByName(Bone0.boneName)
+		* ...  |...
+		*
+		* Goal is to construct:
+		*
+		* magicTrafo
+		* ----------
+		* MatMul(Bone0's accTrafo (accTrafo[boneId[0]]), Bone0.offsetMatrix)
+		* ...
+		*/
 
+		vector<oglplus::Mat4f> magicTrafo;
+
+		MdA(const vector<oglplus::Mat4f> &magicTrafo) :
+			magicTrafo(magicTrafo) {}
+
+		static MdA * MakeFrom(const AnimData &animData, const MeshDataAnim &animMeshData, const NodeMap &nodeMap, size_t tick) {
+			vector<int> boneId = ExtractMeshAnimMapNameId(nodeMap, animMeshData.bone);
+
+			vector<oglplus::Mat4f> onlyTrafo = nodeMap.GetOnlyTrafo();
+			vector<oglplus::Mat4f> updTrafo = onlyTrafo;
+			vector<oglplus::Mat4f> accTrafo;
+
+			TrafoUpdateFromAnim(animData, nodeMap, &updTrafo, tick);
+			TrafoConstructAccumulated(nodeMap, updTrafo, &accTrafo);
+
+			vector<oglplus::Mat4f> magicTrafo;
+
+			for (size_t i = 0; i < boneId.size(); i++)
+				magicTrafo.push_back(accTrafo[boneId[i]] * animMeshData.offsetMatrix[i]);
+
+			return new MdA(move(magicTrafo));
+		}
 	};
 
 	class Shd {
@@ -1044,8 +1093,6 @@ namespace Md {
 			triCnt(0) {}
 
 		void Prime(const MdD &md, const MdT &mt, const MdA &ma) {
-			/* MdD */
-
 			triCnt = md.triCnt;
 
 			va->Bind();
@@ -1054,8 +1101,6 @@ namespace Md {
 
 			md.vt->Bind(oglplus::BufferOps::Target::Array);
 			(*prog|"Position").Setup(3, oglplus::DataType::Float).Enable();
-
-			/* TexPair */
 
 			md.tp.uv->Bind(oglplus::BufferOps::Target::Array);
 			(*prog|"TexCoord").Setup(2, oglplus::DataType::Float).Enable();
@@ -1069,7 +1114,7 @@ namespace Md {
 			ProgramUniform<Mat4f>(*prog, "CameraMatrix") = mt.CameraMatrix;
 			ProgramUniform<Mat4f>(*prog, "ModelMatrix") = mt.ModelMatrix;
 
-			OptionalProgramUniform<Mat4f>(*prog, "MagicTrafo[0]").Set(vector<Mat4f>(2, ModelMatrixf()));
+			OptionalProgramUniform<Mat4f>(*prog, "MagicTrafo").Set(vector<Mat4f>(2, ModelMatrixf()));
 
 			Validate();
 		}
@@ -1410,34 +1455,25 @@ struct Ex5 : public ExBase {
 		ExBase::Display();
 
 		MeshData newMd = ExtractMesh(*scene, *scene->mMeshes[0]);
-		MeshDataAnim dataAnim = ExtractMeshAnim(*scene, *scene->mMeshes[0], *nodeMap);
-		vector<int> boneId = ExtractMeshAnimMapNameId(*nodeMap, dataAnim.bone);
+		MeshDataAnim animMeshData = ExtractMeshAnim(*scene, *scene->mMeshes[0], *nodeMap);
 
-		vector<oglplus::Mat4f> onlyTrafo = nodeMap->GetOnlyTrafo();
-		vector<oglplus::Mat4f> updTrafo = onlyTrafo;
-		vector<oglplus::Mat4f> accTrafo;
-		TrafoUpdateFromAnim(*animData, *nodeMap, &updTrafo, (tick % 10) < 5);
-		TrafoConstructAccumulated(*nodeMap, updTrafo, &accTrafo);
-
-		vector<oglplus::Mat4f> magicTrafo;
-		for (size_t i = 0; i < boneId.size(); i++)
-			magicTrafo.push_back(accTrafo[boneId[i]] * dataAnim.offsetMatrix[i]);
+		mda = shared_ptr<Md::MdA>(Md::MdA::MakeFrom(*animData, animMeshData, *nodeMap, (tick %10) < 5));
 
 		for (size_t i = 0; i < newMd.vt.size(); i++) {
 			oglplus::Vec4f basePos(newMd.vt[i], 1);
 			oglplus::Vec4f defoPos(0, 0, 0, 1);
-			for (size_t j = 0; j < dataAnim.weight.numBone; j++) {
-				if (!ScaZero(dataAnim.weight.GetRefWtAt(i, j)))
-					defoPos += dataAnim.weight.GetRefWtAt(i, j) * (magicTrafo[j] * basePos);
+			for (size_t j = 0; j < animMeshData.weight.numBone; j++) {
+				if (!ScaZero(animMeshData.weight.GetRefWtAt(i, j)))
+					defoPos += animMeshData.weight.GetRefWtAt(i, j) * (mda->magicTrafo[j] * basePos);
 			}
 			newMd.vt[i] = oglplus::Vec3f(defoPos[0], defoPos[1], defoPos[2]); /* FIXME: Divide by defoPos[3] I guess */
 		}
 
-		mdd = make_shared<Md::MdD>(newMd, tex);
-		mdt = make_shared<Md::MdT>(
+		mdd = shared_ptr<Md::MdD>(new Md::MdD(newMd, tex));
+		mdt = shared_ptr<Md::MdT>(new Md::MdT(
 			CamMatrixf::PerspectiveX(Degrees(90), GLfloat(G_WIN_W)/G_WIN_H, 1, 30),
 			CamMatrixf::Orbiting(oglplus::Vec3f(0, 0, 0), 3, Degrees(float(tick * 5)), Degrees(15)),
-			ModelMatrixf());
+			ModelMatrixf()));
 
 		shd.Prime(*mdd, *mdt, *mda);
 		shd.Draw();
