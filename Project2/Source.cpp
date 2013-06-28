@@ -1069,7 +1069,7 @@ namespace Md {
 			ProgramUniform<Mat4f>(*prog, "CameraMatrix") = mt.CameraMatrix;
 			ProgramUniform<Mat4f>(*prog, "ModelMatrix") = mt.ModelMatrix;
 
-			OptionalProgramUniform<Mat4f>(*prog, "MagicTrafo[0]") = ModelMatrixf();
+			OptionalProgramUniform<Mat4f>(*prog, "MagicTrafo[0]").Set(vector<Mat4f>(2, ModelMatrixf()));
 
 			Validate();
 		}
