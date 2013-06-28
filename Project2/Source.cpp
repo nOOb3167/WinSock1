@@ -240,6 +240,11 @@ aiNode & CheckFindNode(const aiNode &n, const char *name) {
 	return *w;
 }
 
+bool IsAttribActive(const Program &prog, const char *name) {
+	VertexAttribSlot dummy;
+	return oglplus::VertexAttribOps::QueryLocation(prog, name, dummy);
+}
+
 struct Ex1 : public ExBase {
 	aiScene *scene;
 	shared_ptr<Texture> tex;
@@ -357,7 +362,7 @@ struct WeightPair {
 struct WeightData {
 	size_t numVert;
 	size_t numBone;
-	unique_ptr<size_t[]> idWeight;
+	unique_ptr<GLuint[]> idWeight;
 	unique_ptr<float[]> wtWeight;
 
 	WeightData(size_t numVert, size_t numBone) :
@@ -391,7 +396,7 @@ struct WeightData {
 		idWeight(move(rhs.idWeight)),
 		wtWeight(move(rhs.wtWeight)) {}
 
-	size_t & GetRefIdAt(size_t v, size_t b) const {
+	GLuint & GetRefIdAt(size_t v, size_t b) const {
 		assert(v < numVert && b < numBone);
 		return idWeight[(v * numBone) + b];
 	}
@@ -819,7 +824,11 @@ namespace Md {
 		shared_ptr<Buffer> vt;
 		TexPair tp;
 
-		MdD(const MeshData &md, shared_ptr<Texture> tex) : triCnt(md.triCnt), id(new Buffer()), vt(new Buffer()) {
+		MdD(const MeshData &md, shared_ptr<Texture> tex) :
+			triCnt(md.triCnt),
+			id(new Buffer()),
+			vt(new Buffer())
+		{
 
 			id->Bind(oglplus::BufferOps::Target::Array);
 			{
@@ -893,8 +902,18 @@ namespace Md {
 
 		vector<oglplus::Mat4f> magicTrafo;
 
-		MdA(const vector<oglplus::Mat4f> &magicTrafo) :
-			magicTrafo(magicTrafo) {}
+		size_t numVert;
+		size_t numBone;
+
+		shared_ptr<Buffer> idWeight;
+		shared_ptr<Buffer> wtWeight;
+
+		MdA(const vector<oglplus::Mat4f> &magicTrafo, size_t numVert, size_t numBone, const shared_ptr<Buffer> &idWeight, const shared_ptr<Buffer> &wtWeight) :
+			magicTrafo(magicTrafo),
+			numVert(numVert),
+			numBone(numBone),
+			idWeight(idWeight),
+			wtWeight(wtWeight) {}
 
 		static MdA * MakeFrom(const AnimData &animData, const MeshDataAnim &animMeshData, const NodeMap &nodeMap, size_t tick) {
 			vector<int> boneId = ExtractMeshAnimMapNameId(nodeMap, animMeshData.bone);
@@ -911,7 +930,20 @@ namespace Md {
 			for (size_t i = 0; i < boneId.size(); i++)
 				magicTrafo.push_back(accTrafo[boneId[i]] * animMeshData.offsetMatrix[i]);
 
-			return new MdA(move(magicTrafo));
+			shared_ptr<Buffer> idWeight(new Buffer());
+			shared_ptr<Buffer> wtWeight(new Buffer());
+
+			/* Shader assuming ivec4 idWeight, vec4 wtWeight. */
+			assert(animMeshData.weight.numBone == 4);
+
+			idWeight->Bind(oglplus::BufferOps::Target::Array);
+			Buffer::Data(oglplus::BufferOps::Target::Array, animMeshData.weight.numVert, animMeshData.weight.idWeight.get());
+			wtWeight->Bind(oglplus::BufferOps::Target::Array);
+			Buffer::Data(oglplus::BufferOps::Target::Array, animMeshData.weight.numVert, animMeshData.weight.wtWeight.get());
+
+			Buffer::Unbind(oglplus::BufferOps::Target::Array);
+
+			return new MdA(move(magicTrafo), animMeshData.weight.numVert, animMeshData.weight.numBone, idWeight, wtWeight);
 		}
 	};
 
@@ -1093,6 +1125,8 @@ namespace Md {
 			triCnt(0) {}
 
 		void Prime(const MdD &md, const MdT &mt, const MdA &ma) {
+			assert(md.triCnt * 3 == ma.numVert);
+			assert(ma.numBone == 4); /* Shader assuming ivec4 idWeight, vec4 wtWeight. */
 			triCnt = md.triCnt;
 
 			va->Bind();
@@ -1114,7 +1148,18 @@ namespace Md {
 			ProgramUniform<Mat4f>(*prog, "CameraMatrix") = mt.CameraMatrix;
 			ProgramUniform<Mat4f>(*prog, "ModelMatrix") = mt.ModelMatrix;
 
-			OptionalProgramUniform<Mat4f>(*prog, "MagicTrafo").Set(vector<Mat4f>(2, ModelMatrixf()));
+			assert(ma.magicTrafo.size() <= G_MAX_BONES_UNIFORM);
+			OptionalProgramUniform<Mat4f>(*prog, "MagicTrafo").Set(ma.magicTrafo);
+
+			if (IsAttribActive(*prog, "IdWeight")) {
+				ma.idWeight->Bind(oglplus::BufferOps::Target::Array);
+				VertexAttribArray(*prog, "IdWeight").Setup(4, oglplus::DataType::Float).Enable();
+			}
+
+			if (IsAttribActive(*prog, "WtWeight")) {
+				md.vt->Bind(oglplus::BufferOps::Target::Array);
+				VertexAttribArray(*prog, "WtWeight").Setup(4, oglplus::DataType::Float).Enable();
+			}
 
 			Validate();
 		}
